@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true, features = ["macros", "json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 common-config = { workspace = true }
+common-msgbus = { workspace = true }
 common-obs = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+futures = "0.3"
+parking_lot = "0.12"
