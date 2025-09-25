@@ -9,4 +9,3 @@ common-config = { workspace = true }
 common-obs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }

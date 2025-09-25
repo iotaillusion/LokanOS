@@ -11,16 +11,25 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use common_config::service_port;
-use common_obs::health_router;
+use common_obs::{health_router, ObsInit};
 
 const SERVICE_NAME: &str = "rule-engine";
 const PORT_ENV: &str = "RULE_ENGINE_PORT";
 const DEFAULT_PORT: u16 = 8002;
 const TICK_INTERVAL_MS: u64 = 500;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn build_sha() -> &'static str {
+    option_env!("BUILD_SHA").unwrap_or("unknown")
+}
+
+fn build_time() -> &'static str {
+    option_env!("BUILD_TIME").unwrap_or("unknown")
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -132,7 +141,7 @@ impl axum::response::IntoResponse for RuleEngineError {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing();
+    ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let port = service_port(PORT_ENV, DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -145,7 +154,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         run_scheduler(scheduler_state).await;
     });
 
-    tracing::info!(%addr, service = SERVICE_NAME, "starting service");
+    tracing::info!(
+        event = "service_start",
+        service = SERVICE_NAME,
+        version = VERSION,
+        build_sha = build_sha(),
+        build_time = build_time(),
+        listen_addr = %addr,
+        "starting service"
+    );
 
     let app = Router::new()
         .route("/v1/rules", get(list_rules).post(create_rule))
@@ -158,11 +175,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 async fn list_rules(State(state): State<AppState>) -> Json<Vec<RuleDefinition>> {

@@ -11,13 +11,12 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use sqlx::Row;
 
 use common_config::service_port;
-use common_obs::health_router;
+use common_obs::{health_router, ObsInit};
 
 #[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!("enable only one backend feature at a time");
@@ -31,6 +30,16 @@ const DEFAULT_PORT: u16 = 8001;
 const DEFAULT_DB_URL: &str = "postgres://localhost/device_registry";
 #[cfg(not(feature = "postgres"))]
 const DEFAULT_DB_URL: &str = "sqlite://device-registry.db";
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn build_sha() -> &'static str {
+    option_env!("BUILD_SHA").unwrap_or("unknown")
+}
+
+fn build_time() -> &'static str {
+    option_env!("BUILD_TIME").unwrap_or("unknown")
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -130,7 +139,7 @@ impl IntoResponse for RegistryError {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing();
+    ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let port = service_port(PORT_ENV, DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -144,7 +153,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, _) = broadcast::channel(64);
     let state = AppState { pool, events: tx };
 
-    tracing::info!(%addr, db = %database_url, service = SERVICE_NAME, "starting service");
+    tracing::info!(
+        event = "service_start",
+        service = SERVICE_NAME,
+        version = VERSION,
+        build_sha = build_sha(),
+        build_time = build_time(),
+        listen_addr = %addr,
+        db = %database_url,
+        "starting service"
+    );
 
     let app = Router::new()
         .route("/v1/rooms", get(list_rooms).post(create_room))
@@ -167,11 +185,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 async fn init_pool(url: &str) -> Result<DbPool, sqlx::Error> {

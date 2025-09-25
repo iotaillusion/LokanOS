@@ -9,15 +9,24 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
 
 use common_config::service_port;
-use common_obs::health_router;
+use common_obs::{health_router, ObsInit};
 
 const SERVICE_NAME: &str = "scene-svc";
 const PORT_ENV: &str = "SCENE_SVC_PORT";
 const DEFAULT_PORT: u16 = 8003;
 const DEFAULT_REGISTRY_URL: &str = "http://127.0.0.1:8001";
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn build_sha() -> &'static str {
+    option_env!("BUILD_SHA").unwrap_or("unknown")
+}
+
+fn build_time() -> &'static str {
+    option_env!("BUILD_TIME").unwrap_or("unknown")
+}
 
 #[derive(Clone)]
 struct AppState<C: DeviceRegistryClient + Send + Sync + 'static> {
@@ -230,7 +239,7 @@ impl<C: DeviceRegistryClient> SceneExecutor<C> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing();
+    ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let port = service_port(PORT_ENV, DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -246,7 +255,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         executor: Arc::new(SceneExecutor { client }),
     };
 
-    tracing::info!(%addr, service = SERVICE_NAME, "starting service");
+    tracing::info!(
+        event = "service_start",
+        service = SERVICE_NAME,
+        version = VERSION,
+        build_sha = build_sha(),
+        build_time = build_time(),
+        listen_addr = %addr,
+        "starting service"
+    );
 
     let app = Router::new()
         .route("/v1/scenes:apply", post(apply_scene))
@@ -257,11 +274,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 async fn apply_scene<C: DeviceRegistryClient + Send + Sync + 'static>(
