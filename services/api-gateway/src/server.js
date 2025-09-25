@@ -12,7 +12,8 @@ function createApp(options = {}) {
   });
 
   registerRoutes(app, {
-    deviceRegistryUrl: resolvedConfig.deviceRegistryUrl
+    deviceRegistryUrl: resolvedConfig.deviceRegistryUrl,
+    sceneServiceUrl: resolvedConfig.sceneServiceUrl
   });
 
   app.use((req, res) => {
