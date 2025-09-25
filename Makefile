@@ -1,19 +1,24 @@
 .PHONY: help fmt lint test build e2e package sbom
 
+BUILD_SHA ?= $(shell git rev-parse --short HEAD)
+BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+CARGO_ENV = BUILD_SHA=$(BUILD_SHA) BUILD_TIME=$(BUILD_TIME)
+
 help:
 @echo "Available targets: fmt lint test build e2e package sbom"
 
 fmt:
-cargo fmt --all
+$(CARGO_ENV) cargo fmt --all
 
 lint:
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+$(CARGO_ENV) cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 test:
-cargo test --workspace --all-targets
+$(CARGO_ENV) cargo test --workspace --all-targets
 
 build:
-cargo build --workspace --all-targets
+$(CARGO_ENV) cargo build --workspace --all-targets
 
 e2e:
 @echo "e2e tests are not implemented yet"

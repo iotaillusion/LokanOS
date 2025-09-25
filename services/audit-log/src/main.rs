@@ -14,10 +14,9 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
 
 use common_config::service_port;
-use common_obs::health_router;
+use common_obs::{health_router, ObsInit};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -25,6 +24,16 @@ const SERVICE_NAME: &str = "audit-log";
 const PORT_ENV: &str = "AUDIT_LOG_PORT";
 const DEFAULT_PORT: u16 = 8008;
 const DEFAULT_PATH: &str = "audit.log";
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn build_sha() -> &'static str {
+    option_env!("BUILD_SHA").unwrap_or("unknown")
+}
+
+fn build_time() -> &'static str {
+    option_env!("BUILD_TIME").unwrap_or("unknown")
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -85,7 +94,7 @@ impl IntoResponse for AuditError {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing();
+    ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let port = service_port(PORT_ENV, DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -96,7 +105,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         writer: Arc::new(Mutex::new(writer)),
     };
 
-    tracing::info!(%addr, %log_path, service = SERVICE_NAME, "starting service");
+    tracing::info!(
+        event = "service_start",
+        service = SERVICE_NAME,
+        version = VERSION,
+        build_sha = build_sha(),
+        build_time = build_time(),
+        listen_addr = %addr,
+        log_path = %log_path,
+        "starting service"
+    );
 
     let app = Router::new()
         .route("/v1/events", post(record_event))
@@ -108,11 +126,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 async fn record_event(

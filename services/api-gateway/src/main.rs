@@ -16,13 +16,31 @@ use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig as RustlsServerConfig};
 use tokio::fs;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn build_sha() -> &'static str {
+    option_env!("BUILD_SHA").unwrap_or("unknown")
+}
+
+fn build_time() -> &'static str {
+    option_env!("BUILD_TIME").unwrap_or("unknown")
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let config = load::<ApiGatewayConfig>()?;
     let addr = config.socket_addr()?;
-    tracing::info!(event = "service_start", service = SERVICE_NAME, %addr);
+    tracing::info!(
+        event = "service_start",
+        service = SERVICE_NAME,
+        version = VERSION,
+        build_sha = build_sha(),
+        build_time = build_time(),
+        listen_addr = %addr,
+        "starting service"
+    );
 
     let bus_config = NatsConfig {
         url: config.bus.url.clone(),
