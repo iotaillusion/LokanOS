@@ -1,5 +1,10 @@
 # LokanOS – Lokan Home Hub Runtime
 
+## TL;DR
+- Headless, modular Rust runtime for the Lokan Home Hub.
+- Provides services, device drivers, automation rules, and network connectors.
+- Delivered in phased milestones documented under `docs/`.
+
 LokanOS is a universal, headless operating framework for the Lokan Home Hub.
 It provides a modular runtime for orchestrating device drivers, automation
 rules, and network protocol connectors without a traditional UI.  The runtime
