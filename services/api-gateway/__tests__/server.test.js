@@ -86,25 +86,174 @@ function createDeviceRegistryStub() {
   return { app, devices };
 }
 
+function createSceneServiceStub(devices) {
+  const app = express();
+  app.use(express.json());
+
+  const scenes = new Map();
+
+  function validateItems(items) {
+    if (!Array.isArray(items)) {
+      return 'items must be an array';
+    }
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!item || typeof item !== 'object') {
+        return `items[${index}] must be an object`;
+      }
+      if (typeof item.deviceId !== 'string') {
+        return `items[${index}].deviceId must be a string`;
+      }
+      if (!devices.has(item.deviceId)) {
+        return `Device ${item.deviceId} not found`;
+      }
+      if (!item.desiredState || typeof item.desiredState !== 'object') {
+        return `items[${index}].desiredState must be an object`;
+      }
+    }
+    return null;
+  }
+
+  app.get('/scenes', (req, res) => {
+    res.json({ scenes: Array.from(scenes.values()) });
+  });
+
+  app.get('/scenes/:id', (req, res) => {
+    const scene = scenes.get(req.params.id);
+    if (!scene) {
+      res.status(404).json({ error: 'Scene not found' });
+      return;
+    }
+    res.json(scene);
+  });
+
+  app.post('/scenes', (req, res) => {
+    const payload = req.body || {};
+    if (!payload.id || !payload.name) {
+      res.status(400).json({ error: 'Invalid scene payload' });
+      return;
+    }
+    const validationError = validateItems(payload.items || []);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
+    const scene = {
+      id: payload.id,
+      name: payload.name,
+      items: (payload.items || []).map((item) => ({
+        deviceId: item.deviceId,
+        desiredState: { ...item.desiredState }
+      }))
+    };
+    scenes.set(scene.id, scene);
+    res.status(201).json(scene);
+  });
+
+  app.put('/scenes/:id', (req, res) => {
+    const existing = scenes.get(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: 'Scene not found' });
+      return;
+    }
+    const updates = req.body || {};
+    if (updates.items) {
+      const validationError = validateItems(updates.items);
+      if (validationError) {
+        res.status(400).json({ error: validationError });
+        return;
+      }
+      existing.items = updates.items.map((item) => ({
+        deviceId: item.deviceId,
+        desiredState: { ...item.desiredState }
+      }));
+    }
+    if (updates.name) {
+      existing.name = updates.name;
+    }
+    scenes.set(existing.id, existing);
+    res.json(existing);
+  });
+
+  app.delete('/scenes/:id', (req, res) => {
+    if (!scenes.has(req.params.id)) {
+      res.status(404).json({ error: 'Scene not found' });
+      return;
+    }
+    scenes.delete(req.params.id);
+    res.status(204).send();
+  });
+
+  app.post('/scenes/:id/apply', (req, res) => {
+    const scene = scenes.get(req.params.id);
+    if (!scene) {
+      res.status(404).json({ error: 'Scene not found' });
+      return;
+    }
+    res.status(202).json({
+      sceneId: scene.id,
+      status: 'planned',
+      steps: scene.items.map((item, index) => ({
+        order: index + 1,
+        deviceId: item.deviceId,
+        desiredState: { ...item.desiredState }
+      }))
+    });
+  });
+
+  return { app, scenes };
+}
+
 describe('api-gateway server', () => {
   let registryServer;
+  let sceneServer;
   let app;
   let devices;
+  let scenes;
 
   beforeAll((done) => {
     const { app: registryApp, devices: registryDevices } = createDeviceRegistryStub();
     devices = registryDevices;
+    const { app: sceneApp, scenes: sceneStore } = createSceneServiceStub(devices);
+    scenes = sceneStore;
+
     registryServer = http.createServer(registryApp);
-    registryServer.listen(0, () => {
-      const { port } = registryServer.address();
-      const deviceRegistryUrl = `http://127.0.0.1:${port}`;
-      app = createApp({ config: { port: 0, tlsDisable: true, deviceRegistryUrl } });
-      done();
-    });
+    sceneServer = http.createServer(sceneApp);
+
+    let pending = 2;
+    function handleReady() {
+      pending -= 1;
+      if (pending === 0) {
+        const registryPort = registryServer.address().port;
+        const scenePort = sceneServer.address().port;
+        const deviceRegistryUrl = `http://127.0.0.1:${registryPort}`;
+        const sceneServiceUrl = `http://127.0.0.1:${scenePort}`;
+        app = createApp({
+          config: { port: 0, tlsDisable: true, deviceRegistryUrl, sceneServiceUrl }
+        });
+        done();
+      }
+    }
+
+    registryServer.listen(0, handleReady);
+    sceneServer.listen(0, handleReady);
   });
 
   afterAll((done) => {
-    registryServer.close(done);
+    const servers = [registryServer, sceneServer].filter(Boolean);
+    let pending = servers.length;
+    if (pending === 0) {
+      done();
+      return;
+    }
+    servers.forEach((server) => {
+      server.close(() => {
+        pending -= 1;
+        if (pending === 0) {
+          done();
+        }
+      });
+    });
   });
 
   describe('GET /healthz', () => {
@@ -156,6 +305,42 @@ describe('api-gateway server', () => {
           deviceIds: Array.from(devices.values()).filter((device) => device.roomId === 'room-1').map((device) => device.id)
         }
       ]);
+    });
+  });
+
+  describe('scene proxy routes', () => {
+    it('proxies CRUD operations to the scene service', async () => {
+      const client = request(app);
+
+      const createResponse = await client.post('/v1/scenes').send({
+        id: 'scene-movie-night',
+        name: 'Movie Night',
+        items: [{ deviceId: 'device-thermostat-1', desiredState: { temperature: 68 } }]
+      });
+      expect(createResponse.status).toBe(201);
+      expect(scenes.has('scene-movie-night')).toBe(true);
+
+      const listResponse = await client.get('/v1/scenes');
+      expect(listResponse.status).toBe(200);
+      expect(listResponse.body.scenes).toHaveLength(1);
+
+      const getResponse = await client.get('/v1/scenes/scene-movie-night');
+      expect(getResponse.status).toBe(200);
+      expect(getResponse.body).toMatchObject({ id: 'scene-movie-night', name: 'Movie Night' });
+
+      const updateResponse = await client
+        .put('/v1/scenes/scene-movie-night')
+        .send({ name: 'Movie Time' });
+      expect(updateResponse.status).toBe(200);
+      expect(updateResponse.body).toMatchObject({ name: 'Movie Time' });
+
+      const applyResponse = await client.post('/v1/scenes/scene-movie-night/apply');
+      expect(applyResponse.status).toBe(202);
+      expect(applyResponse.body).toMatchObject({ sceneId: 'scene-movie-night', status: 'planned' });
+
+      const deleteResponse = await client.delete('/v1/scenes/scene-movie-night');
+      expect(deleteResponse.status).toBe(204);
+      expect(scenes.has('scene-movie-night')).toBe(false);
     });
   });
 });

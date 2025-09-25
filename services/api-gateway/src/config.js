@@ -1,5 +1,6 @@
 const DEFAULT_PORT = 8080;
 const DEFAULT_DEVICE_REGISTRY_URL = 'http://localhost:4100';
+const DEFAULT_SCENE_SERVICE_URL = 'http://localhost:4300';
 
 function parsePort(rawPort) {
   const port = Number.parseInt(rawPort, 10);
@@ -17,15 +18,15 @@ function parseTlsDisable(rawValue) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
-function parseDeviceRegistryUrl(rawUrl) {
+function parseUrl(rawUrl, fallback) {
   if (!rawUrl) {
-    return DEFAULT_DEVICE_REGISTRY_URL;
+    return fallback;
   }
   try {
     const parsed = new URL(rawUrl);
     return parsed.toString().replace(/\/$/, '');
   } catch (error) {
-    return DEFAULT_DEVICE_REGISTRY_URL;
+    return fallback;
   }
 }
 
@@ -33,12 +34,14 @@ function getConfig(env = process.env) {
   return {
     port: parsePort(env.PORT),
     tlsDisable: parseTlsDisable(env.TLS_DISABLE),
-    deviceRegistryUrl: parseDeviceRegistryUrl(env.DEVICE_REGISTRY_URL)
+    deviceRegistryUrl: parseUrl(env.DEVICE_REGISTRY_URL, DEFAULT_DEVICE_REGISTRY_URL),
+    sceneServiceUrl: parseUrl(env.SCENE_SERVICE_URL, DEFAULT_SCENE_SERVICE_URL)
   };
 }
 
 module.exports = {
   DEFAULT_PORT,
   DEFAULT_DEVICE_REGISTRY_URL,
+  DEFAULT_SCENE_SERVICE_URL,
   getConfig
 };

@@ -1,5 +1,6 @@
 const DEFAULT_OPTIONS = {
-  deviceRegistryUrl: 'http://localhost:4100'
+  deviceRegistryUrl: 'http://localhost:4100',
+  sceneServiceUrl: 'http://localhost:4300'
 };
 
 const fetchImpl = typeof fetch === 'function'
@@ -11,21 +12,22 @@ async function proxyRequest(path, options) {
   const contentType = response.headers.get('content-type') || '';
   const body = contentType.includes('application/json') ? await response.json() : await response.text();
   if (!response.ok) {
-    const error = new Error(`Device registry responded with ${response.status}`);
+    const error = new Error(`Upstream service responded with ${response.status}`);
     error.status = response.status;
     error.body = body;
     throw error;
   }
-  return body;
+  return { status: response.status, body };
 }
 
 function registerRoutes(app, options = {}) {
   const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
-  const baseUrl = mergedOptions.deviceRegistryUrl.replace(/\/$/, '');
+  const deviceBaseUrl = mergedOptions.deviceRegistryUrl.replace(/\/$/, '');
+  const sceneBaseUrl = mergedOptions.sceneServiceUrl.replace(/\/$/, '');
 
   app.get('/v1/topology', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices`, { method: 'GET' });
+      const { body: data } = await proxyRequest(`${deviceBaseUrl}/devices`, { method: 'GET' });
       const devices = data.devices || [];
       const roomsMap = new Map();
       devices.forEach((device) => {
@@ -51,8 +53,8 @@ function registerRoutes(app, options = {}) {
 
   app.get('/v1/devices', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices`, { method: 'GET' });
-      res.json(data);
+      const { body } = await proxyRequest(`${deviceBaseUrl}/devices`, { method: 'GET' });
+      res.json(body);
     } catch (error) {
       res.status(error.status || 502).json({ error: 'Failed to fetch devices' });
     }
@@ -60,8 +62,8 @@ function registerRoutes(app, options = {}) {
 
   app.get('/v1/devices/:id', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}`, { method: 'GET' });
-      res.json(data);
+      const { body } = await proxyRequest(`${deviceBaseUrl}/devices/${req.params.id}`, { method: 'GET' });
+      res.json(body);
     } catch (error) {
       if (error.status === 404) {
         res.status(404).json({ error: 'Device not found' });
@@ -73,12 +75,12 @@ function registerRoutes(app, options = {}) {
 
   app.post('/v1/devices', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices`, {
+      const { body } = await proxyRequest(`${deviceBaseUrl}/devices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req.body || {})
       });
-      res.status(201).json(data);
+      res.status(201).json(body);
     } catch (error) {
       res.status(error.status || 502).json({ error: 'Failed to create device', details: error.body?.error });
     }
@@ -86,12 +88,12 @@ function registerRoutes(app, options = {}) {
 
   app.put('/v1/devices/:id', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}`, {
+      const { body } = await proxyRequest(`${deviceBaseUrl}/devices/${req.params.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req.body || {})
       });
-      res.json(data);
+      res.json(body);
     } catch (error) {
       if (error.status === 404) {
         res.status(404).json({ error: 'Device not found' });
@@ -103,7 +105,7 @@ function registerRoutes(app, options = {}) {
 
   app.delete('/v1/devices/:id', async (req, res) => {
     try {
-      await proxyRequest(`${baseUrl}/devices/${req.params.id}`, { method: 'DELETE' });
+      await proxyRequest(`${deviceBaseUrl}/devices/${req.params.id}`, { method: 'DELETE' });
       res.status(204).send();
     } catch (error) {
       if (error.status === 404) {
@@ -116,12 +118,12 @@ function registerRoutes(app, options = {}) {
 
   app.post('/v1/devices/:id/state', async (req, res) => {
     try {
-      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}/state`, {
+      const { body } = await proxyRequest(`${deviceBaseUrl}/devices/${req.params.id}/state`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req.body || {})
       });
-      res.json(data);
+      res.json(body);
     } catch (error) {
       if (error.status === 404) {
         res.status(404).json({ error: 'Device not found' });
@@ -139,12 +141,88 @@ function registerRoutes(app, options = {}) {
     });
   });
 
-  app.post('/v1/scenes/:id/apply', (req, res) => {
-    const { id } = req.params;
-    res.status(202).json({
-      sceneId: id,
-      status: 'queued'
-    });
+  app.get('/v1/scenes', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${sceneBaseUrl}/scenes`, { method: 'GET' });
+      res.json(body);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to fetch scenes' });
+    }
+  });
+
+  app.get('/v1/scenes/:id', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${sceneBaseUrl}/scenes/${req.params.id}`, { method: 'GET' });
+      res.json(body);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Scene not found' });
+      } else if (error.status === 400) {
+        res.status(400).json({ error: 'Invalid scene identifier' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to fetch scene' });
+      }
+    }
+  });
+
+  app.post('/v1/scenes', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${sceneBaseUrl}/scenes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(201).json(body);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to create scene', details: error.body?.error });
+    }
+  });
+
+  app.put('/v1/scenes/:id', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${sceneBaseUrl}/scenes/${req.params.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.json(body);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Scene not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to update scene', details: error.body?.error });
+      }
+    }
+  });
+
+  app.delete('/v1/scenes/:id', async (req, res) => {
+    try {
+      await proxyRequest(`${sceneBaseUrl}/scenes/${req.params.id}`, { method: 'DELETE' });
+      res.status(204).send();
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Scene not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to delete scene' });
+      }
+    }
+  });
+
+  app.post('/v1/scenes/:id/apply', async (req, res) => {
+    try {
+      const { status, body } = await proxyRequest(`${sceneBaseUrl}/scenes/${req.params.id}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(status).json(body);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Scene not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to apply scene', details: error.body?.error });
+      }
+    }
   });
 
   app.post('/v1/rules:test', (req, res) => {
