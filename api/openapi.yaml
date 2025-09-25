@@ -1,544 +1,286 @@
 openapi: 3.1.0
 info:
-  title: LokanOS Public API
-  version: "0.0.1"
-  description: |
-    Initial OpenAPI specification for LokanOS control plane operations.
-  license:
-    name: Proprietary
-    url: https://lokanos.dev/license
+  title: Lokan OS Hub API
+  version: 0.9.0
+  description: App-only, local-first API (no web UI). Matter/Thread/Wi-Fi only.
 servers:
-  - url: https://api.lokanos.dev
-    description: Production server (placeholder)
-security:
-  - bearerAuth: []
+  - url: https://hub.local
+    description: Local LAN endpoint (mTLS required in prod)
+
 paths:
+  /v1/healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness/health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
   /v1/topology:
     get:
-      summary: Retrieve the topology of the installation
-      description: |
-        Returns the current topology including rooms, devices, and scenes configured
-        within the LokanOS environment.
       operationId: getTopology
+      summary: Rooms, devices, scenes
       responses:
         '200':
-          description: Topology information grouped by entity type.
+          description: Topology snapshot
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  rooms:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Room'
-                  devices:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Device'
-                  scenes:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Scene'
-                required:
-                  - rooms
-                  - devices
-                  - scenes
-        '404':
-          description: Topology information is temporarily unavailable.
+              schema: { $ref: '#/components/schemas/Topology' }
+
   /v1/devices/{id}/commands:
     post:
-      summary: Execute a command against a device
-      description: Sends a command to the specified device for asynchronous execution.
       operationId: postDeviceCommand
+      summary: Send a command to a device
       parameters:
         - name: id
           in: path
           required: true
-          description: Unique identifier of the device.
-          schema:
-            type: string
+          schema: { type: string }
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/CommandRequest'
+            schema: { $ref: '#/components/schemas/CommandRequest' }
       responses:
-        '202':
-          description: Command accepted for processing.
+        '200':
+          description: Command accepted
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  commandId:
-                    type: string
-                    description: Server issued identifier for the command execution.
-                  status:
-                    type: string
-                    description: Processing state of the command request.
-                required:
-                  - commandId
-                  - status
-        '400':
-          description: Invalid command payload.
-        '404':
-          description: Device not found.
+              schema: { $ref: '#/components/schemas/CommandResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
   /v1/scenes/{id}/apply:
     post:
-      summary: Apply a scene
-      description: Activates the scene, applying the preconfigured device states.
-      operationId: applyScene
+      operationId: postSceneApply
+      summary: Apply a scene atomically
       parameters:
         - name: id
           in: path
           required: true
-          description: Unique identifier of the scene to apply.
-          schema:
-            type: string
+          schema: { type: string }
       responses:
-        '202':
-          description: Scene accepted for application.
+        '200':
+          description: Plan + result
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  sceneId:
-                    type: string
-                  status:
-                    type: string
-                    description: Current processing state of the scene application.
-                required:
-                  - sceneId
-                  - status
-        '404':
-          description: Scene not found.
+              schema: { $ref: '#/components/schemas/SceneApplyResult' }
+
   /v1/rules:test:
     post:
-      summary: Execute a rule against test inputs
-      description: Validates a rule by running it against provided test inputs.
-      operationId: testRule
+      operationId: postRulesTest
+      summary: Dry-run a rule and return the action plan
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/RuleTestRequest'
+            schema: { $ref: '#/components/schemas/RuleTestRequest' }
       responses:
         '200':
-          description: Result of the rule test invocation.
+          description: Deterministic simulation result
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/RuleTestResult'
-        '400':
-          description: Invalid test request supplied.
+              schema: { $ref: '#/components/schemas/RuleTestResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
   /v1/updates/check:
-    post:
-      summary: Retrieve firmware update slot status
-      description: Returns the current slot allocation and pending update metadata for the device fleet.
-      operationId: checkUpdates
+    get:
+      operationId: getUpdatesCheck
+      summary: Check for update availability and slot status
       responses:
         '200':
-          description: Current update orchestration state including slot assignments.
+          description: Update availability
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/FirmwareUpdateStatus'
+              schema: { $ref: '#/components/schemas/UpdateCheckResponse' }
+
   /v1/updates/apply:
     post:
-      summary: Stage or finalize a firmware update
-      description: |
-        Stages a new firmware version onto the inactive slot and marks it for activation, or
-        finalizes a previously staged update when the request indicates `finalize: true`.
-      operationId: applyUpdate
+      operationId: postUpdatesApply
+      summary: Stage/apply an update to the inactive slot
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              $ref: '#/components/schemas/FirmwareUpdateApplyRequest'
+            schema: { $ref: '#/components/schemas/UpdateApplyRequest' }
       responses:
         '202':
-          description: Update was staged and activation has been scheduled.
+          description: Update accepted for staging
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/FirmwareUpdateApplyResponse'
-        '200':
-          description: Previously staged update was finalized.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FirmwareUpdateApplyResponse'
-        '400':
-          description: Invalid update request supplied.
-        '409':
-          description: An update is already in progress and cannot be staged again.
+              schema: { $ref: '#/components/schemas/UpdateApplyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
 components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
   schemas:
-    Device:
+    Health:
       type: object
-      description: Physical or virtual device managed by LokanOS.
       properties:
-        id:
-          type: string
-        name:
-          type: string
-        type:
-          type: string
-          description: Device type or capability profile.
-        roomId:
-          type: string
-          description: Identifier of the room the device belongs to.
-        state:
-          type: object
-          additionalProperties: true
-          description: Arbitrary representation of the device state.
-        metadata:
-          type: object
-          additionalProperties: true
-          description: Additional properties describing the device.
-      required:
-        - id
-        - name
-        - type
-        - roomId
+        status: { type: string, enum: [ok] }
+        service: { type: string }
+        time: { type: string, format: date-time }
+      required: [status, service, time]
+
+    Topology:
+      type: object
+      properties:
+        rooms:
+          type: array
+          items: { $ref: '#/components/schemas/Room' }
+        devices:
+          type: array
+          items: { $ref: '#/components/schemas/Device' }
+        scenes:
+          type: array
+          items: { $ref: '#/components/schemas/Scene' }
+      required: [rooms, devices, scenes]
+
     Room:
       type: object
-      description: Logical container grouping devices.
       properties:
-        id:
+        id: { type: string }
+        name: { type: string }
+      required: [id, name]
+
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        roomId: { type: string }
+        name: { type: string }
+        capability:
           type: string
-        name:
-          type: string
-        floor:
-          type: string
-          description: Optional floor label for the room.
-        deviceIds:
-          type: array
-          items:
-            type: string
-          description: List of device identifiers present in the room.
-      required:
-        - id
-        - name
-        - deviceIds
+          enum: [light, plug, sensor, lock]
+        state: { $ref: '#/components/schemas/DeviceState' }
+      required: [id, roomId, name, capability, state]
+
+    DeviceState:
+      type: object
+      additionalProperties: true
+      properties:
+        on: { type: boolean }
+        level: { type: integer, minimum: 0, maximum: 100 }
+        locked: { type: boolean }
+
     Scene:
       type: object
-      description: Collection of device states that can be applied together.
       properties:
-        id:
-          type: string
-        name:
-          type: string
-        description:
-          type: string
-          description: Optional description providing context for the scene.
-        deviceStates:
+        id: { type: string }
+        name: { type: string }
+        items:
           type: array
           items:
             type: object
             properties:
-              deviceId:
-                type: string
-              state:
-                type: object
-                additionalProperties: true
-            required:
-              - deviceId
-              - state
-      required:
-        - id
-        - name
-        - deviceStates
+              deviceId: { type: string }
+              desiredState: { $ref: '#/components/schemas/DeviceState' }
+            required: [deviceId, desiredState]
+      required: [id, name, items]
+
     CommandRequest:
       type: object
-      description: Representation of a command to be executed on a device.
       properties:
-        command:
-          type: string
-        correlationId:
-          type: string
-          description: Optional caller supplied identifier for correlating responses.
-        parameters:
+        capability: { type: string, enum: [light, plug, sensor, lock] }
+        action: { type: string, enum: [set, toggle, lock, unlock] }
+        args:
           type: object
-          additionalProperties: true
-          description: Command parameters specific to the device type.
-      required:
-        - command
+          properties:
+            on: { type: boolean }
+            level: { type: integer, minimum: 0, maximum: 100 }
+      required: [capability, action]
+
+    CommandResponse:
+      type: object
+      properties:
+        accepted: { type: boolean }
+        deviceId: { type: string }
+        appliedState: { $ref: '#/components/schemas/DeviceState' }
+      required: [accepted, deviceId]
+
     RuleTestRequest:
       type: object
-      description: Input payload to test a rule with simulated data.
       properties:
-        ruleId:
-          type: string
-        rule:
-          $ref: '#/components/schemas/RuleDefinition'
-        inputs:
-          type: object
-          additionalProperties: true
-          description: Arbitrary data passed to the rule for evaluation.
-        context:
-          type: object
-          additionalProperties: true
-          description: Optional execution context for the rule engine.
-      required:
-        - ruleId
-        - rule
-        - inputs
-    RuleTestResult:
-      type: object
-      description: Outcome of executing a rule against test inputs.
-      properties:
-        ruleId:
-          type: string
-        status:
-          type: string
-          enum:
-            - passed
-            - failed
-            - error
-        logs:
-          type: array
-          items:
-            type: string
-          description: Diagnostic log lines produced during evaluation.
+        triggers: { type: array, items: { type: object } }
+        conditions: { type: array, items: { type: object } }
         actions:
           type: array
           items:
             type: object
             properties:
-              type:
-                type: string
-              payload:
-                type: object
-                additionalProperties: true
-            required:
-              - type
-        errors:
+              deviceId: { type: string }
+              desiredState: { $ref: '#/components/schemas/DeviceState' }
+            required: [deviceId, desiredState]
+      required: [triggers, actions]
+
+    RuleTestResult:
+      type: object
+      properties:
+        plan:
           type: array
           items:
-            type: string
-          description: Optional error messages encountered during processing.
-      required:
-        - ruleId
-        - status
-    RuleDefinition:
-      type: object
-      description: LokanOS rule definition expressed in the domain-specific JSON DSL.
-      properties:
-        id:
-          type: string
-          description: Optional identifier for the rule definition.
-        name:
-          type: string
-          description: Human friendly label for the rule.
-        triggers:
+            type: object
+            properties:
+              deviceId: { type: string }
+              desiredState: { $ref: '#/components/schemas/DeviceState' }
+            required: [deviceId, desiredState]
+        warnings:
           type: array
-          description: Trigger conditions that cause the rule to evaluate.
-          minItems: 1
-          items:
-            $ref: '#/components/schemas/RuleTrigger'
-        conditions:
+          items: { type: string }
+      required: [plan]
+
+    SceneApplyResult:
+      type: object
+      properties:
+        plan:
           type: array
-          description: Predicate checks applied before actions run.
           items:
-            $ref: '#/components/schemas/RuleCondition'
-        actions:
-          type: array
-          description: Ordered actions emitted when the rule passes.
-          minItems: 1
-          items:
-            $ref: '#/components/schemas/RuleAction'
-      required:
-        - triggers
-        - actions
-      additionalProperties: false
-    RuleTrigger:
+            type: object
+            properties:
+              deviceId: { type: string }
+              desiredState: { $ref: '#/components/schemas/DeviceState' }
+            required: [deviceId, desiredState]
+        successCount: { type: integer, minimum: 0 }
+        failureCount: { type: integer, minimum: 0 }
+      required: [plan, successCount, failureCount]
+
+    UpdateCheckResponse:
       type: object
-      description: Trigger definition supported by the rule engine.
       properties:
-        type:
-          type: string
-          enum:
-            - event
-        event:
-          type: string
-          description: Name of the event expected from the trigger payload.
-        source:
-          type: string
-          description: Optional source identifier for the trigger event.
-        criteria:
-          type: object
-          additionalProperties:
-            oneOf:
-              - type: string
-              - type: number
-              - type: boolean
-              - type: 'null'
-          description: Additional equality criteria applied to the trigger payload.
-      required:
-        - type
-      additionalProperties: false
-    RuleCondition:
+        currentVersion: { type: string }
+        availableVersion: { type: string, nullable: true }
+        activeSlot: { type: string, enum: [A, B] }
+        nextSlot: { type: string, enum: [A, B] }
+        canUpdate: { type: boolean }
+      required: [currentVersion, activeSlot, nextSlot, canUpdate]
+
+    UpdateApplyRequest:
       type: object
-      description: Condition evaluated against the provided inputs.
       properties:
-        type:
-          type: string
-          enum:
-            - comparison
-        operator:
-          type: string
-          enum:
-            - eq
-            - neq
-            - gt
-            - gte
-            - lt
-            - lte
-            - contains
-            - in
-        path:
-          type: string
-          description: Dot-separated path evaluated against the inputs object.
-        value:
-          description: Value compared against the resolved path.
-      required:
-        - type
-        - operator
-        - path
-        - value
-      additionalProperties: false
-    RuleAction:
+        version: { type: string }
+        channel: { type: string, enum: [canary, beta, stable], default: stable }
+      required: [version]
+
+    UpdateApplyResponse:
       type: object
-      description: Declarative action emitted by the rule engine.
       properties:
-        type:
-          type: string
-        target:
-          type: string
-          description: Optional target identifier impacted by the action.
-        payload:
-          type: object
-          additionalProperties: true
-        parameters:
-          type: object
-          additionalProperties: true
-      required:
-        - type
-      additionalProperties: false
-    FirmwareUpdateStatus:
+        accepted: { type: boolean }
+        stagedVersion: { type: string }
+        targetSlot: { type: string, enum: [A, B] }
+      required: [accepted, stagedVersion, targetSlot]
+
+    Error:
       type: object
-      description: Aggregated status of the updater service slot state machine.
       properties:
-        activeSlot:
-          type: string
-          description: Identifier of the slot currently booted by the system.
-        activeVersion:
-          type: string
-          nullable: true
-          description: Firmware version running on the active slot.
-        inactiveSlot:
-          type: string
-          description: Identifier of the inactive slot.
-        inactiveVersion:
-          type: string
-          nullable: true
-          description: Firmware version stored on the inactive slot.
-        stagedSlot:
-          type: string
-          nullable: true
-          description: Slot containing a staged update awaiting activation.
-        stagedVersion:
-          type: string
-          nullable: true
-          description: Version currently staged on the inactive slot.
-        trialSlot:
-          type: string
-          nullable: true
-          description: Slot being validated prior to commitment.
-        trialVersion:
-          type: string
-          nullable: true
-          description: Version under validation on the trial slot.
-        rollbackSlot:
-          type: string
-          nullable: true
-          description: Slot that would be restored if the trial fails.
-        rollbackVersion:
-          type: string
-          nullable: true
-          description: Version that would be restored if a rollback occurs.
-        bootCount:
-          type: integer
-          format: int32
-          description: Number of boot attempts recorded for the current trial.
-        unhealthyBoots:
-          type: integer
-          format: int32
-          description: Count of consecutive unhealthy boots recorded.
-        healthFailWindow:
-          type: integer
-          format: int32
-          description: Number of unhealthy boots tolerated before rollback.
-        lastRollback:
-          $ref: '#/components/schemas/FirmwareRollbackEvent'
-      required:
-        - activeSlot
-        - inactiveSlot
-        - bootCount
-        - unhealthyBoots
-        - healthFailWindow
-    FirmwareRollbackEvent:
-      type: object
-      description: Details captured when the system performs an automatic rollback.
-      properties:
-        fromSlot:
-          type: string
-          description: Slot that was rolled back from.
-        toSlot:
-          type: string
-          description: Slot restored as the active slot.
-        failedVersion:
-          type: string
-          nullable: true
-          description: Version that failed validation.
-        restoredVersion:
-          type: string
-          nullable: true
-          description: Version restored during rollback.
-      required:
-        - fromSlot
-        - toSlot
-    FirmwareUpdateApplyRequest:
-      type: object
-      description: Request payload used to stage or finalize a firmware update.
-      properties:
-        version:
-          type: string
-          description: Firmware version identifier to stage on the inactive slot.
-        finalize:
-          type: boolean
-          description: When true, finalize a previously staged update instead of staging a new version.
-      additionalProperties: false
-    FirmwareUpdateApplyResponse:
-      type: object
-      description: Response returned after staging or finalizing an update.
-      properties:
-        status:
-          type: string
-          description: High level status of the apply operation.
-        state:
-          $ref: '#/components/schemas/FirmwareUpdateStatus'
-      required:
-        - status
-        - state
+        error: { type: string }
+        message: { type: string }
+        code: { type: integer }
+      required: [error, message]
