@@ -6,7 +6,10 @@ edition = "2021"
 [dependencies]
 axum = { workspace = true }
 common-config = { workspace = true }
+common-mdns = { workspace = true }
+common-msgbus = { workspace = true }
 common-obs = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

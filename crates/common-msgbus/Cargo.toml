@@ -4,10 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1"
+futures = "0.3"
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-stream = { version = "0.1", optional = true }
 tracing = { workspace = true }
+dashmap = { version = "5", optional = true }
 
 [features]
-default = []
+default = ["nats"]
 json = ["serde"]
+mock = ["dashmap", "tokio-stream"]
+nats = ["async-nats", "tokio-stream"]
+
+[dependencies.async-nats]
+optional = true
+version = "0.37"
