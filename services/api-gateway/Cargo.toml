@@ -10,6 +10,8 @@ common-config = { workspace = true }
 common-mdns = { workspace = true }
 common-msgbus = { workspace = true }
 common-obs = { workspace = true }
+common-ble = { workspace = true }
+base64 = "0.21"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 rustls = "0.23"
 rustls-pemfile = "2.1"
@@ -20,3 +22,11 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+hyper = "0.14"
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

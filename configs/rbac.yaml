@@ -24,3 +24,15 @@ routes:
     methods: [POST]
     roles: [admin, owner]
     audit_action: devices.create
+  - pattern: /v1/commissioning/ble/handshake
+    methods: [POST]
+    roles: [guest, member, admin, owner]
+    audit_action: commissioning.handshake
+  - pattern: /v1/commissioning/csr
+    methods: [POST]
+    roles: [guest, member, admin, owner]
+    audit_action: commissioning.csr
+  - pattern: /v1/commissioning/verify
+    methods: [POST]
+    roles: [guest, member, admin, owner]
+    audit_action: commissioning.verify
