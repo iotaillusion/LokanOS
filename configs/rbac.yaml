@@ -1,0 +1,26 @@
+roles:
+  owner:
+    inherits: [admin]
+  admin:
+    inherits: [member]
+  member:
+    inherits: [guest]
+  guest: {}
+
+routes:
+  - pattern: /v1/health
+    methods: [GET]
+    roles: [guest]
+    audit_action: system.health
+  - pattern: /v1/info
+    methods: [GET]
+    roles: [guest]
+    audit_action: system.info
+  - pattern: /v1/devices
+    methods: [GET]
+    roles: [member, admin, owner]
+    audit_action: devices.list
+  - pattern: /v1/devices
+    methods: [POST]
+    roles: [admin, owner]
+    audit_action: devices.create

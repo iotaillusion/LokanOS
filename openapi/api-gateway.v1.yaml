@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  title: LokanOS API Gateway
+  version: 1.0.0-dev
+  description: >-
+    Initial skeleton for the LokanOS API gateway. All endpoints require mutual TLS
+    authentication using certificates issued by the Lokan development CA.
+servers:
+  - url: https://localhost:8443
+    description: Development gateway
+security:
+  - mtls: []
+tags:
+  - name: Health
+    description: Basic service health checks.
+  - name: Info
+    description: Metadata about the API gateway deployment.
+  - name: Devices
+    description: Proxy surface for the device registry.
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  responses:
+    ErrorResponse:
+      description: Structured JSON error payload.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required: [code, message]
+            required: [error]
+paths:
+  /v1/health:
+    get:
+      tags: [Health]
+      summary: Gateway health probe.
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+                required: [status, service]
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/info:
+    get:
+      tags: [Info]
+      summary: Gateway metadata.
+      responses:
+        '200':
+          description: Informational details about the gateway build.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service:
+                    type: string
+                  version:
+                    type: string
+                required: [service, version]
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/devices:
+    get:
+      tags: [Devices]
+      summary: List registered devices.
+      description: >-
+        Proxies the request to the device registry service and returns the JSON
+        payload. Rate limiting and RBAC policies are enforced before proxying.
+      responses:
+        '200':
+          description: Device records proxied from the registry.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requested_by:
+                    type: object
+                    properties:
+                      subject:
+                        type: string
+                      role:
+                        type: string
+                    required: [subject, role]
+                  devices:
+                    description: JSON payload returned by the device registry.
+                    nullable: true
+                    type: object
+                    additionalProperties: true
+                required: [requested_by, devices]
+        '429':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Devices]
+      summary: Placeholder for future device provisioning APIs.
+      description: Not yet implemented.
+      responses:
+        '501':
+          description: Not implemented.
+          $ref: '#/components/responses/ErrorResponse'
