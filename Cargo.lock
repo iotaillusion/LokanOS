@@ -75,6 +75,7 @@ dependencies = [
  "common-obs",
  "http-body-util",
  "hyper 0.14.32",
+ "once_cell",
  "rand",
  "reqwest",
  "rustls 0.23.32",

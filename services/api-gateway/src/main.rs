@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use api_gateway::audit::AuditClient;
@@ -9,19 +10,19 @@ use axum_server::tls_rustls::RustlsConfig;
 use common_config::load;
 use common_mdns::announce;
 use common_msgbus::{MessageBus, NatsBus, NatsConfig};
+use common_obs::ObsInit;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig as RustlsServerConfig};
 use tokio::fs;
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_tracing();
+    ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let config = load::<ApiGatewayConfig>()?;
     let addr = config.socket_addr()?;
-    tracing::info!(%addr, service = SERVICE_NAME, "starting service");
+    tracing::info!(event = "service_start", service = SERVICE_NAME, %addr);
 
     let bus_config = NatsConfig {
         url: config.bus.url.clone(),
@@ -54,15 +55,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rustls_config = build_rustls_config(&config.tls).await?;
 
     axum_server::bind_rustls(addr, rustls_config)
-        .serve(router.into_make_service())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
 
-    Ok(())
-}
+    tracing::info!(event = "service_stop", service = SERVICE_NAME);
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    Ok(())
 }
 
 async fn build_rustls_config(
