@@ -1,0 +1,288 @@
+openapi: 3.1.0
+info:
+  title: LokanOS Public API
+  version: "0.0.1"
+  description: |
+    Initial OpenAPI specification for LokanOS control plane operations.
+  license:
+    name: Proprietary
+    url: https://lokanos.dev/license
+servers:
+  - url: https://api.lokanos.dev
+    description: Production server (placeholder)
+security:
+  - bearerAuth: []
+paths:
+  /v1/topology:
+    get:
+      summary: Retrieve the topology of the installation
+      description: |
+        Returns the current topology including rooms, devices, and scenes configured
+        within the LokanOS environment.
+      operationId: getTopology
+      responses:
+        '200':
+          description: Topology information grouped by entity type.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rooms:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Room'
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Device'
+                  scenes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Scene'
+                required:
+                  - rooms
+                  - devices
+                  - scenes
+        '404':
+          description: Topology information is temporarily unavailable.
+  /v1/devices/{id}/commands:
+    post:
+      summary: Execute a command against a device
+      description: Sends a command to the specified device for asynchronous execution.
+      operationId: postDeviceCommand
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique identifier of the device.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+      responses:
+        '202':
+          description: Command accepted for processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  commandId:
+                    type: string
+                    description: Server issued identifier for the command execution.
+                  status:
+                    type: string
+                    description: Processing state of the command request.
+                required:
+                  - commandId
+                  - status
+        '400':
+          description: Invalid command payload.
+        '404':
+          description: Device not found.
+  /v1/scenes/{id}/apply:
+    post:
+      summary: Apply a scene
+      description: Activates the scene, applying the preconfigured device states.
+      operationId: applyScene
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique identifier of the scene to apply.
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Scene accepted for application.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sceneId:
+                    type: string
+                  status:
+                    type: string
+                    description: Current processing state of the scene application.
+                required:
+                  - sceneId
+                  - status
+        '404':
+          description: Scene not found.
+  /v1/rules:test:
+    post:
+      summary: Execute a rule against test inputs
+      description: Validates a rule by running it against provided test inputs.
+      operationId: testRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleTestRequest'
+      responses:
+        '200':
+          description: Result of the rule test invocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleTestResult'
+        '400':
+          description: Invalid test request supplied.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Device:
+      type: object
+      description: Physical or virtual device managed by LokanOS.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          description: Device type or capability profile.
+        roomId:
+          type: string
+          description: Identifier of the room the device belongs to.
+        state:
+          type: object
+          additionalProperties: true
+          description: Arbitrary representation of the device state.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional properties describing the device.
+      required:
+        - id
+        - name
+        - type
+        - roomId
+    Room:
+      type: object
+      description: Logical container grouping devices.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        floor:
+          type: string
+          description: Optional floor label for the room.
+        deviceIds:
+          type: array
+          items:
+            type: string
+          description: List of device identifiers present in the room.
+      required:
+        - id
+        - name
+        - deviceIds
+    Scene:
+      type: object
+      description: Collection of device states that can be applied together.
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          description: Optional description providing context for the scene.
+        deviceStates:
+          type: array
+          items:
+            type: object
+            properties:
+              deviceId:
+                type: string
+              state:
+                type: object
+                additionalProperties: true
+            required:
+              - deviceId
+              - state
+      required:
+        - id
+        - name
+        - deviceStates
+    CommandRequest:
+      type: object
+      description: Representation of a command to be executed on a device.
+      properties:
+        command:
+          type: string
+        correlationId:
+          type: string
+          description: Optional caller supplied identifier for correlating responses.
+        parameters:
+          type: object
+          additionalProperties: true
+          description: Command parameters specific to the device type.
+      required:
+        - command
+    RuleTestRequest:
+      type: object
+      description: Input payload to test a rule with simulated data.
+      properties:
+        ruleId:
+          type: string
+        inputs:
+          type: object
+          additionalProperties: true
+          description: Arbitrary data passed to the rule for evaluation.
+        context:
+          type: object
+          additionalProperties: true
+          description: Optional execution context for the rule engine.
+      required:
+        - ruleId
+        - inputs
+    RuleTestResult:
+      type: object
+      description: Outcome of executing a rule against test inputs.
+      properties:
+        ruleId:
+          type: string
+        status:
+          type: string
+          enum:
+            - passed
+            - failed
+            - error
+        logs:
+          type: array
+          items:
+            type: string
+          description: Diagnostic log lines produced during evaluation.
+        actions:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              payload:
+                type: object
+                additionalProperties: true
+            required:
+              - type
+        errors:
+          type: array
+          items:
+            type: string
+          description: Optional error messages encountered during processing.
+      required:
+        - ruleId
+        - status

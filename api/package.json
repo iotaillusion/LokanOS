@@ -4,7 +4,11 @@
   "private": true,
   "description": "API definitions and tooling for LokanOS",
   "scripts": {
-    "generate": "echo \"OpenAPI generation placeholder\""
+    "generate": "echo \"OpenAPI generation placeholder\"",
+    "lint": "redocly lint openapi.yaml",
+    "validate": "npm run lint"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@redocly/cli": "^1.16.0"
+  }
 }
