@@ -1,15 +1,27 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: Lokan OS Hub API
   version: 0.9.0
-  description: App-only, local-first API (no web UI). Matter/Thread/Wi-Fi only.
+  description: >
+    App-only, local-first API for Lokan OS (no web UI). Matter/Thread/Wi-Fi only.
+    All endpoints are intended for LAN access; production requires mTLS.
+
 servers:
   - url: https://hub.local
-    description: Local LAN endpoint (mTLS required in prod)
+    description: Local LAN endpoint (mTLS required in production)
+
+tags:
+  - name: Health
+  - name: Topology
+  - name: Devices
+  - name: Scenes
+  - name: Rules
+  - name: Updates
 
 paths:
   /v1/healthz:
     get:
+      tags: [Health]
       operationId: getHealthz
       summary: Liveness/health check
       responses:
@@ -17,270 +29,452 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Health' }
+              schema:
+                $ref: '#/components/schemas/Health'
+              examples:
+                ok:
+                  value:
+                    status: ok
+                    service: api-gateway
+                    time: '2025-01-01T12:34:56Z'
 
   /v1/topology:
     get:
+      tags: [Topology]
       operationId: getTopology
-      summary: Rooms, devices, scenes
+      summary: Rooms, devices, and scenes snapshot
       responses:
         '200':
           description: Topology snapshot
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Topology' }
+              schema:
+                $ref: '#/components/schemas/Topology'
 
   /v1/devices/{id}/commands:
     post:
+      tags: [Devices]
       operationId: postDeviceCommand
       summary: Send a command to a device
       parameters:
         - name: id
           in: path
           required: true
-          schema: { type: string }
+          description: Device identifier
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/CommandRequest' }
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+            examples:
+              set-level:
+                value:
+                  capability: light
+                  action: set
+                  args:
+                    on: true
+                    level: 42
       responses:
         '200':
           description: Command accepted
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/CommandResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
   /v1/scenes/{id}/apply:
     post:
+      tags: [Scenes]
       operationId: postSceneApply
       summary: Apply a scene atomically
       parameters:
         - name: id
           in: path
           required: true
-          schema: { type: string }
+          description: Scene identifier
+          schema:
+            type: string
       responses:
         '200':
-          description: Plan + result
+          description: Plan and application result
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SceneApplyResult' }
+              schema:
+                $ref: '#/components/schemas/SceneApplyResult'
 
   /v1/rules:test:
     post:
+      tags: [Rules]
       operationId: postRulesTest
       summary: Dry-run a rule and return the action plan
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/RuleTestRequest' }
+            schema:
+              $ref: '#/components/schemas/RuleTestRequest'
+            examples:
+              motion-after-8pm:
+                value:
+                  triggers:
+                    - type: device
+                      deviceId: sensor.entry.motion
+                      event: motion
+                  conditions:
+                    - type: time
+                      after: '20:00'
+                  actions:
+                    - deviceId: light.hall
+                      desiredState:
+                        on: true
+                        level: 30
       responses:
         '200':
           description: Deterministic simulation result
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RuleTestResult' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+              schema:
+                $ref: '#/components/schemas/RuleTestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
   /v1/updates/check:
     get:
+      tags: [Updates]
       operationId: getUpdatesCheck
       summary: Check for update availability and slot status
       responses:
         '200':
-          description: Update availability
+          description: Update availability and slot info
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/UpdateCheckResponse' }
+              schema:
+                $ref: '#/components/schemas/UpdateCheckResponse'
+              examples:
+                available:
+                  value:
+                    currentVersion: 0.9.0
+                    activeSlot: A
+                    nextSlot: B
+                    canUpdate: true
+                    availableVersion: 0.9.1
+                none:
+                  value:
+                    currentVersion: 0.9.0
+                    activeSlot: A
+                    nextSlot: B
+                    canUpdate: false
 
   /v1/updates/apply:
     post:
+      tags: [Updates]
       operationId: postUpdatesApply
       summary: Stage/apply an update to the inactive slot
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/UpdateApplyRequest' }
+            schema:
+              $ref: '#/components/schemas/UpdateApplyRequest'
+            examples:
+              stable:
+                value:
+                  version: 0.9.1
+                  channel: stable
       responses:
         '202':
           description: Update accepted for staging
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/UpdateApplyResponse' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+              schema:
+                $ref: '#/components/schemas/UpdateApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
 
 components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+      description: Client certificate required in production
   responses:
     BadRequest:
       description: Bad request
       content:
         application/json:
-          schema: { $ref: '#/components/schemas/Error' }
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid:
+              value:
+                error: BadRequest
+                message: Invalid payload
+                code: 400
 
   schemas:
+    # ---- Basic & shared types ----
     Health:
       type: object
-      properties:
-        status: { type: string, enum: [ok] }
-        service: { type: string }
-        time: { type: string, format: date-time }
+      additionalProperties: false
       required: [status, service, time]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: api-gateway
+        time:
+          type: string
+          format: date-time
 
     Topology:
       type: object
+      additionalProperties: false
+      required: [rooms, devices, scenes]
       properties:
         rooms:
           type: array
-          items: { $ref: '#/components/schemas/Room' }
+          items:
+            $ref: '#/components/schemas/Room'
         devices:
           type: array
-          items: { $ref: '#/components/schemas/Device' }
+          items:
+            $ref: '#/components/schemas/Device'
         scenes:
           type: array
-          items: { $ref: '#/components/schemas/Scene' }
-      required: [rooms, devices, scenes]
+          items:
+            $ref: '#/components/schemas/Scene'
 
     Room:
       type: object
-      properties:
-        id: { type: string }
-        name: { type: string }
+      additionalProperties: false
       required: [id, name]
+      properties:
+        id:
+          type: string
+          example: room.living
+        name:
+          type: string
+          example: Living Room
 
     Device:
       type: object
-      properties:
-        id: { type: string }
-        roomId: { type: string }
-        name: { type: string }
-        capability:
-          type: string
-          enum: [light, plug, sensor, lock]
-        state: { $ref: '#/components/schemas/DeviceState' }
+      additionalProperties: false
       required: [id, roomId, name, capability, state]
+      properties:
+        id:
+          type: string
+          example: light.living.ceiling
+        roomId:
+          type: string
+          example: room.living
+        name:
+          type: string
+          example: Ceiling Light
+        capability:
+          $ref: '#/components/schemas/Capability'
+        state:
+          $ref: '#/components/schemas/DeviceState'
+
+    Capability:
+      type: string
+      description: High-level device capability
+      enum: [light, plug, sensor, lock]
 
     DeviceState:
       type: object
+      description: State is capability-dependent; unknown fields are allowed
       additionalProperties: true
       properties:
-        on: { type: boolean }
-        level: { type: integer, minimum: 0, maximum: 100 }
-        locked: { type: boolean }
+        on:
+          type: boolean
+        level:
+          type: integer
+          minimum: 0
+          maximum: 100
+        locked:
+          type: boolean
 
     Scene:
       type: object
+      additionalProperties: false
+      required: [id, name, items]
       properties:
-        id: { type: string }
-        name: { type: string }
+        id:
+          type: string
+          example: scene.movie
+        name:
+          type: string
+          example: Movie Night
         items:
           type: array
           items:
-            type: object
-            properties:
-              deviceId: { type: string }
-              desiredState: { $ref: '#/components/schemas/DeviceState' }
-            required: [deviceId, desiredState]
-      required: [id, name, items]
+            $ref: '#/components/schemas/SceneItem'
 
+    SceneItem:
+      type: object
+      additionalProperties: false
+      required: [deviceId, desiredState]
+      properties:
+        deviceId:
+          type: string
+        desiredState:
+          $ref: '#/components/schemas/DeviceState'
+
+    # ---- Commands ----
     CommandRequest:
       type: object
+      additionalProperties: false
+      required: [capability, action]
       properties:
-        capability: { type: string, enum: [light, plug, sensor, lock] }
-        action: { type: string, enum: [set, toggle, lock, unlock] }
+        capability:
+          $ref: '#/components/schemas/Capability'
+        action:
+          type: string
+          enum: [set, toggle, lock, unlock]
         args:
           type: object
+          additionalProperties: false
           properties:
-            on: { type: boolean }
-            level: { type: integer, minimum: 0, maximum: 100 }
-      required: [capability, action]
+            on:
+              type: boolean
+            level:
+              type: integer
+              minimum: 0
+              maximum: 100
 
     CommandResponse:
       type: object
-      properties:
-        accepted: { type: boolean }
-        deviceId: { type: string }
-        appliedState: { $ref: '#/components/schemas/DeviceState' }
+      additionalProperties: false
       required: [accepted, deviceId]
+      properties:
+        accepted:
+          type: boolean
+        deviceId:
+          type: string
+        appliedState:
+          $ref: '#/components/schemas/DeviceState'
 
+    # ---- Rules (simulate only in v0) ----
     RuleTestRequest:
       type: object
+      additionalProperties: false
+      required: [triggers, actions]
       properties:
-        triggers: { type: array, items: { type: object } }
-        conditions: { type: array, items: { type: object } }
+        triggers:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
         actions:
           type: array
           items:
-            type: object
-            properties:
-              deviceId: { type: string }
-              desiredState: { $ref: '#/components/schemas/DeviceState' }
-            required: [deviceId, desiredState]
-      required: [triggers, actions]
+            $ref: '#/components/schemas/SceneItem'
 
     RuleTestResult:
       type: object
+      additionalProperties: false
+      required: [plan]
       properties:
         plan:
           type: array
           items:
-            type: object
-            properties:
-              deviceId: { type: string }
-              desiredState: { $ref: '#/components/schemas/DeviceState' }
-            required: [deviceId, desiredState]
+            $ref: '#/components/schemas/SceneItem'
         warnings:
           type: array
-          items: { type: string }
-      required: [plan]
+          items:
+            type: string
 
+    # ---- Scenes Apply result ----
     SceneApplyResult:
       type: object
+      additionalProperties: false
+      required: [plan, successCount, failureCount]
       properties:
         plan:
           type: array
           items:
-            type: object
-            properties:
-              deviceId: { type: string }
-              desiredState: { $ref: '#/components/schemas/DeviceState' }
-            required: [deviceId, desiredState]
-        successCount: { type: integer, minimum: 0 }
-        failureCount: { type: integer, minimum: 0 }
-      required: [plan, successCount, failureCount]
+            $ref: '#/components/schemas/SceneItem'
+        successCount:
+          type: integer
+          minimum: 0
+        failureCount:
+          type: integer
+          minimum: 0
 
+    # ---- Updates (A/B) ----
     UpdateCheckResponse:
       type: object
-      properties:
-        currentVersion: { type: string }
-        availableVersion: { type: string, nullable: true }
-        activeSlot: { type: string, enum: [A, B] }
-        nextSlot: { type: string, enum: [A, B] }
-        canUpdate: { type: boolean }
+      additionalProperties: false
       required: [currentVersion, activeSlot, nextSlot, canUpdate]
+      properties:
+        currentVersion:
+          type: string
+          example: 0.9.0
+        activeSlot:
+          type: string
+          enum: [A, B]
+        nextSlot:
+          type: string
+          enum: [A, B]
+        canUpdate:
+          type: boolean
+        availableVersion:
+          type: string
+          description: Present only if an update is available
+          example: 0.9.1
 
     UpdateApplyRequest:
       type: object
-      properties:
-        version: { type: string }
-        channel: { type: string, enum: [canary, beta, stable], default: stable }
+      additionalProperties: false
       required: [version]
+      properties:
+        version:
+          type: string
+          example: 0.9.1
+        channel:
+          type: string
+          enum: [canary, beta, stable]
+          default: stable
 
     UpdateApplyResponse:
       type: object
-      properties:
-        accepted: { type: boolean }
-        stagedVersion: { type: string }
-        targetSlot: { type: string, enum: [A, B] }
+      additionalProperties: false
       required: [accepted, stagedVersion, targetSlot]
+      properties:
+        accepted:
+          type: boolean
+        stagedVersion:
+          type: string
+        targetSlot:
+          type: string
+          enum: [A, B]
 
+    # ---- Error ----
     Error:
       type: object
-      properties:
-        error: { type: string }
-        message: { type: string }
-        code: { type: integer }
+      additionalProperties: false
       required: [error, message]
+      properties:
+        error:
+          type: string
+          example: BadRequest
+        message:
+          type: string
+          example: Invalid payload
+        code:
+          type: integer
+          example: 400
+
+security:
+  - mtls: []
