@@ -14,7 +14,8 @@ function createApp(options = {}) {
   registerRoutes(app, {
     deviceRegistryUrl: resolvedConfig.deviceRegistryUrl,
     sceneServiceUrl: resolvedConfig.sceneServiceUrl,
-    ruleEngineUrl: resolvedConfig.ruleEngineUrl
+    ruleEngineUrl: resolvedConfig.ruleEngineUrl,
+    presenceServiceUrl: resolvedConfig.presenceServiceUrl
   });
 
   app.use((req, res) => {

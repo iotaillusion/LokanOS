@@ -230,14 +230,62 @@ function createRuleEngineStub() {
   return { app, requests };
 }
 
+function createPresenceServiceStub() {
+  const app = express();
+  app.use(express.json());
+
+  const presences = new Map([
+    [
+      'user-alice',
+      {
+        userId: 'user-alice',
+        state: 'home',
+        lastSeenAt: '2024-06-01T09:00:00.000Z'
+      }
+    ]
+  ]);
+
+  app.get('/presence', (req, res) => {
+    res.json({ presences: Array.from(presences.values()) });
+  });
+
+  app.get('/presence/:userId', (req, res) => {
+    const record = presences.get(req.params.userId);
+    if (!record) {
+      res.status(404).json({ error: 'Presence not found' });
+      return;
+    }
+    res.json(record);
+  });
+
+  app.put('/presence/:userId', (req, res) => {
+    const payload = req.body || {};
+    if (!payload.state || (payload.state !== 'home' && payload.state !== 'away')) {
+      res.status(400).json({ error: 'Invalid state' });
+      return;
+    }
+    const record = {
+      userId: req.params.userId,
+      state: payload.state,
+      lastSeenAt: payload.lastSeenAt || new Date().toISOString()
+    };
+    presences.set(req.params.userId, record);
+    res.json(record);
+  });
+
+  return { app, presences };
+}
+
 describe('api-gateway server', () => {
   let registryServer;
   let sceneServer;
   let ruleEngineServer;
+  let presenceServer;
   let app;
   let devices;
   let scenes;
   let ruleRequests;
+  let presences;
 
   beforeAll((done) => {
     const { app: registryApp, devices: registryDevices } = createDeviceRegistryStub();
@@ -246,23 +294,35 @@ describe('api-gateway server', () => {
     scenes = sceneStore;
     const { app: ruleApp, requests } = createRuleEngineStub();
     ruleRequests = requests;
+    const { app: presenceApp, presences: presenceStore } = createPresenceServiceStub();
+    presences = presenceStore;
 
     registryServer = http.createServer(registryApp);
     sceneServer = http.createServer(sceneApp);
     ruleEngineServer = http.createServer(ruleApp);
+    presenceServer = http.createServer(presenceApp);
 
-    let pending = 3;
+    let pending = 4;
     let registryPort;
     let scenePort;
     let ruleEnginePort;
+    let presencePort;
     function handleReady() {
       pending -= 1;
       if (pending === 0) {
         const deviceRegistryUrl = `http://127.0.0.1:${registryPort}`;
         const sceneServiceUrl = `http://127.0.0.1:${scenePort}`;
         const ruleEngineUrl = `http://127.0.0.1:${ruleEnginePort}`;
+        const presenceServiceUrl = `http://127.0.0.1:${presencePort}`;
         app = createApp({
-          config: { port: 0, tlsDisable: true, deviceRegistryUrl, sceneServiceUrl, ruleEngineUrl }
+          config: {
+            port: 0,
+            tlsDisable: true,
+            deviceRegistryUrl,
+            sceneServiceUrl,
+            ruleEngineUrl,
+            presenceServiceUrl
+          }
         });
         done();
       }
@@ -280,10 +340,14 @@ describe('api-gateway server', () => {
       ruleEnginePort = ruleEngineServer.address().port;
       handleReady();
     });
+    presenceServer.listen(0, () => {
+      presencePort = presenceServer.address().port;
+      handleReady();
+    });
   });
 
   afterAll((done) => {
-    const servers = [registryServer, sceneServer, ruleEngineServer].filter(Boolean);
+    const servers = [registryServer, sceneServer, ruleEngineServer, presenceServer].filter(Boolean);
     let pending = servers.length;
     if (pending === 0) {
       done();
@@ -406,6 +470,20 @@ describe('api-gateway server', () => {
       expect(response.body.actions).toEqual(payload.rule.actions);
       expect(ruleRequests).toHaveLength(1);
       expect(ruleRequests[0]).toMatchObject(payload);
+    });
+  });
+
+  describe('presence routes', () => {
+    it('proxies presence queries to the presence service', async () => {
+      const client = request(app);
+
+      const listResponse = await client.get('/v1/presence');
+      expect(listResponse.status).toBe(200);
+      expect(listResponse.body.presences).toHaveLength(presences.size);
+
+      const getResponse = await client.get('/v1/presence/user-alice');
+      expect(getResponse.status).toBe(200);
+      expect(getResponse.body).toEqual(presences.get('user-alice'));
     });
   });
 });
