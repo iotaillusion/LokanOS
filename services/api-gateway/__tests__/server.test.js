@@ -276,16 +276,65 @@ function createPresenceServiceStub() {
   return { app, presences };
 }
 
+function createUpdaterServiceStub() {
+  const app = express();
+  app.use(express.json());
+
+  const state = {
+    activeSlot: 'slotA',
+    activeVersion: '1.0.0',
+    staged: null,
+    trial: null,
+    requests: []
+  };
+
+  app.post('/updates/check', (req, res) => {
+    res.json({
+      activeSlot: state.activeSlot,
+      activeVersion: state.activeVersion,
+      stagedSlot: state.staged?.slot || null,
+      stagedVersion: state.staged?.version || null,
+      trialSlot: state.trial ? state.activeSlot : null,
+      trialVersion: state.trial ? state.activeVersion : null,
+      healthFailWindow: 2
+    });
+  });
+
+  app.post('/updates/apply', (req, res) => {
+    state.requests.push(req.body || {});
+    const payload = req.body || {};
+    if (!payload.version && payload.finalize !== true) {
+      res.status(400).json({ error: 'version is required' });
+      return;
+    }
+
+    if (payload.finalize === true) {
+      state.trial = false;
+      res.json({ status: 'committed', state: { activeSlot: state.activeSlot } });
+      return;
+    }
+
+    state.activeSlot = state.activeSlot === 'slotA' ? 'slotB' : 'slotA';
+    state.activeVersion = payload.version;
+    state.trial = true;
+    res.status(202).json({ status: 'staged', state: { activeSlot: state.activeSlot, activeVersion: state.activeVersion } });
+  });
+
+  return { app, state };
+}
+
 describe('api-gateway server', () => {
   let registryServer;
   let sceneServer;
   let ruleEngineServer;
   let presenceServer;
+  let updaterServer;
   let app;
   let devices;
   let scenes;
   let ruleRequests;
   let presences;
+  let updaterState;
 
   beforeAll((done) => {
     const { app: registryApp, devices: registryDevices } = createDeviceRegistryStub();
@@ -296,17 +345,21 @@ describe('api-gateway server', () => {
     ruleRequests = requests;
     const { app: presenceApp, presences: presenceStore } = createPresenceServiceStub();
     presences = presenceStore;
+    const { app: updaterApp, state } = createUpdaterServiceStub();
+    updaterState = state;
 
     registryServer = http.createServer(registryApp);
     sceneServer = http.createServer(sceneApp);
     ruleEngineServer = http.createServer(ruleApp);
     presenceServer = http.createServer(presenceApp);
+    updaterServer = http.createServer(updaterApp);
 
-    let pending = 4;
+    let pending = 5;
     let registryPort;
     let scenePort;
     let ruleEnginePort;
     let presencePort;
+    let updaterPort;
     function handleReady() {
       pending -= 1;
       if (pending === 0) {
@@ -314,6 +367,7 @@ describe('api-gateway server', () => {
         const sceneServiceUrl = `http://127.0.0.1:${scenePort}`;
         const ruleEngineUrl = `http://127.0.0.1:${ruleEnginePort}`;
         const presenceServiceUrl = `http://127.0.0.1:${presencePort}`;
+        const updaterServiceUrl = `http://127.0.0.1:${updaterPort}`;
         app = createApp({
           config: {
             port: 0,
@@ -321,7 +375,8 @@ describe('api-gateway server', () => {
             deviceRegistryUrl,
             sceneServiceUrl,
             ruleEngineUrl,
-            presenceServiceUrl
+            presenceServiceUrl,
+            updaterServiceUrl
           }
         });
         done();
@@ -344,10 +399,14 @@ describe('api-gateway server', () => {
       presencePort = presenceServer.address().port;
       handleReady();
     });
+    updaterServer.listen(0, () => {
+      updaterPort = updaterServer.address().port;
+      handleReady();
+    });
   });
 
   afterAll((done) => {
-    const servers = [registryServer, sceneServer, ruleEngineServer, presenceServer].filter(Boolean);
+    const servers = [registryServer, sceneServer, ruleEngineServer, presenceServer, updaterServer].filter(Boolean);
     let pending = servers.length;
     if (pending === 0) {
       done();
@@ -484,6 +543,21 @@ describe('api-gateway server', () => {
       const getResponse = await client.get('/v1/presence/user-alice');
       expect(getResponse.status).toBe(200);
       expect(getResponse.body).toEqual(presences.get('user-alice'));
+    });
+  });
+
+  describe('updater routes', () => {
+    it('proxies update status checks', async () => {
+      const response = await request(app).post('/v1/updates/check');
+      expect(response.status).toBe(200);
+      expect(response.body.activeSlot).toBe(updaterState.activeSlot);
+    });
+
+    it('proxies update apply requests', async () => {
+      const response = await request(app).post('/v1/updates/apply').send({ version: '2.0.0' });
+      expect(response.status).toBe(202);
+      expect(response.body.status).toBe('staged');
+      expect(updaterState.requests).toContainEqual({ version: '2.0.0' });
     });
   });
 });
