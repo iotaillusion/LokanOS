@@ -19,6 +19,8 @@ pub enum ApiError {
     Upstream(String),
     #[error("internal server error")]
     Internal,
+    #[error("invalid request: {message}")]
+    Validation { message: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +62,12 @@ impl IntoResponse for ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
                 self.to_string(),
+                None,
+            ),
+            ApiError::Validation { message } => (
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                message.clone(),
                 None,
             ),
         };

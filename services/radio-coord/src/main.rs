@@ -1,15 +1,20 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use common_config::{load, MsgBusConfig, ServiceConfig};
 use common_mdns::announce;
-use common_msgbus::{NatsBus, NatsConfig};
-use common_obs::health_router;
-use serde::Deserialize;
+use common_msgbus::{MessageBus, NatsBus, NatsConfig};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: &str = "radio-coord";
+type SharedState = Arc<AppState>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         url: config.bus.url.clone(),
         request_timeout: config.bus.request_timeout(),
     };
-    let _bus = NatsBus::connect(bus_config).await?;
+    let bus: Arc<dyn MessageBus> = Arc::new(NatsBus::connect(bus_config).await?);
 
     let _mdns = if config.announce_mdns {
         Some(announce(&config.mdns_service, config.port).await?)
@@ -32,7 +37,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let app = Router::new().merge(health_router(SERVICE_NAME));
+    let state = Arc::new(AppState { bus });
+
+    let app = Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/thread/dataset", post(apply_thread_dataset))
+        .route("/v1/thread/channel", post(update_thread_channel))
+        .route("/v1/wifi/config", post(apply_wifi_config))
+        .route("/v1/wifi/channel", post(update_wifi_channel))
+        .with_state(state.clone());
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -43,6 +56,114 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+}
+
+async fn health() -> Json<serde_json::Value> {
+    Json(json!({ "status": "ok", "service": SERVICE_NAME }))
+}
+
+#[derive(Clone)]
+struct AppState {
+    bus: Arc<dyn MessageBus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadDatasetRequest {
+    dataset_id: String,
+    network_name: String,
+    channel: u8,
+    pan_id: String,
+    #[serde(default)]
+    xpan_id: Option<String>,
+    #[serde(default)]
+    master_key: Option<String>,
+    #[serde(default)]
+    pskc: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadChannelRequest {
+    channel: u8,
+    #[serde(default)]
+    dataset_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiConfigRequest {
+    ssid: String,
+    #[serde(default)]
+    passphrase: Option<String>,
+    #[serde(default)]
+    security: WifiSecurity,
+    #[serde(default)]
+    band: Option<String>,
+    #[serde(default)]
+    channel: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiChannelRequest {
+    channel: u8,
+    #[serde(default)]
+    band: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Acknowledgement {
+    accepted: bool,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum WifiSecurity {
+    Open,
+    Wpa2,
+    Wpa3,
+}
+
+impl Default for WifiSecurity {
+    fn default() -> Self {
+        WifiSecurity::Wpa2
+    }
+}
+
+impl WifiSecurity {
+    fn as_str(&self) -> &'static str {
+        match self {
+            WifiSecurity::Open => "open",
+            WifiSecurity::Wpa2 => "wpa2",
+            WifiSecurity::Wpa3 => "wpa3",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ApiError {
+    Validation(String),
+    Bus(String),
+}
+
+impl axum::response::IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, code, message) = match self {
+            ApiError::Validation(message) => (StatusCode::BAD_REQUEST, "validation_error", message),
+            ApiError::Bus(message) => (StatusCode::SERVICE_UNAVAILABLE, "bus_error", message),
+        };
+
+        let body = Json(json!({
+            "error": {
+                "code": code,
+                "message": message,
+            }
+        }));
+        (status, body).into_response()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,4 +201,238 @@ impl RadioCoordConfig {
     fn socket_addr(&self) -> Result<SocketAddr, std::net::AddrParseError> {
         format!("{}:{}", self.bind_address, self.port).parse()
     }
+}
+
+async fn apply_thread_dataset(
+    State(state): State<SharedState>,
+    Json(request): Json<ThreadDatasetRequest>,
+) -> Result<(StatusCode, Json<Acknowledgement>), ApiError> {
+    validate_thread_dataset(&request)?;
+
+    let event = json!({
+        "action": "thread.dataset.apply",
+        "datasetId": request.dataset_id,
+        "networkName": request.network_name,
+        "channel": request.channel,
+        "panId": request.pan_id,
+        "xpanId": request.xpan_id,
+    });
+
+    publish_event(&state, "radio.thread.dataset.set", &event).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Acknowledgement {
+            accepted: true,
+            message: "thread dataset accepted".to_string(),
+        }),
+    ))
+}
+
+async fn update_thread_channel(
+    State(state): State<SharedState>,
+    Json(request): Json<ThreadChannelRequest>,
+) -> Result<(StatusCode, Json<Acknowledgement>), ApiError> {
+    validate_thread_channel(&request)?;
+
+    let event = json!({
+        "action": "thread.channel.update",
+        "channel": request.channel,
+        "datasetId": request.dataset_id,
+    });
+
+    publish_event(&state, "radio.thread.channel.set", &event).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Acknowledgement {
+            accepted: true,
+            message: "thread channel update accepted".to_string(),
+        }),
+    ))
+}
+
+async fn apply_wifi_config(
+    State(state): State<SharedState>,
+    Json(request): Json<WifiConfigRequest>,
+) -> Result<(StatusCode, Json<Acknowledgement>), ApiError> {
+    validate_wifi_config(&request)?;
+
+    let event = json!({
+        "action": "wifi.config.apply",
+        "ssid": request.ssid,
+        "security": request.security.as_str(),
+        "band": request.band,
+        "channel": request.channel,
+    });
+
+    publish_event(&state, "radio.wifi.config.set", &event).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Acknowledgement {
+            accepted: true,
+            message: "wifi configuration accepted".to_string(),
+        }),
+    ))
+}
+
+async fn update_wifi_channel(
+    State(state): State<SharedState>,
+    Json(request): Json<WifiChannelRequest>,
+) -> Result<(StatusCode, Json<Acknowledgement>), ApiError> {
+    validate_wifi_channel(&request)?;
+
+    let event = json!({
+        "action": "wifi.channel.update",
+        "channel": request.channel,
+        "band": request.band,
+    });
+
+    publish_event(&state, "radio.wifi.channel.set", &event).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(Acknowledgement {
+            accepted: true,
+            message: "wifi channel update accepted".to_string(),
+        }),
+    ))
+}
+
+fn validate_thread_dataset(request: &ThreadDatasetRequest) -> Result<(), ApiError> {
+    ensure_hex(&request.dataset_id, 32, "datasetId")?;
+    ensure_name(&request.network_name, 1, 16, "networkName")?;
+    ensure_thread_channel(request.channel)?;
+    ensure_hex(&request.pan_id, 4, "panId")?;
+    if let Some(xpan_id) = &request.xpan_id {
+        ensure_hex(xpan_id, 16, "xpanId")?;
+    }
+    if let Some(master_key) = &request.master_key {
+        ensure_hex(master_key, 32, "masterKey")?;
+    }
+    if let Some(pskc) = &request.pskc {
+        ensure_hex(pskc, 32, "pskc")?;
+    }
+    Ok(())
+}
+
+fn validate_thread_channel(request: &ThreadChannelRequest) -> Result<(), ApiError> {
+    ensure_thread_channel(request.channel)?;
+    if let Some(dataset_id) = &request.dataset_id {
+        ensure_hex(dataset_id, 32, "datasetId")?;
+    }
+    Ok(())
+}
+
+fn validate_wifi_config(request: &WifiConfigRequest) -> Result<(), ApiError> {
+    ensure_name(&request.ssid, 1, 32, "ssid")?;
+    if matches!(request.security, WifiSecurity::Wpa2 | WifiSecurity::Wpa3) {
+        let passphrase = request.passphrase.as_ref().ok_or_else(|| {
+            ApiError::Validation("passphrase is required for secured networks".to_string())
+        })?;
+        if passphrase.len() < 8 || passphrase.len() > 63 {
+            return Err(ApiError::Validation(
+                "passphrase must be between 8 and 63 characters".to_string(),
+            ));
+        }
+    }
+
+    if let Some(band) = &request.band {
+        ensure_band(band)?;
+    }
+
+    if let Some(channel) = request.channel {
+        ensure_wifi_channel(channel)?;
+    }
+
+    Ok(())
+}
+
+fn validate_wifi_channel(request: &WifiChannelRequest) -> Result<(), ApiError> {
+    ensure_wifi_channel(request.channel)?;
+    if let Some(band) = &request.band {
+        ensure_band(band)?;
+    }
+    Ok(())
+}
+
+fn ensure_thread_channel(channel: u8) -> Result<(), ApiError> {
+    if (11..=26).contains(&channel) {
+        Ok(())
+    } else {
+        Err(ApiError::Validation(format!(
+            "thread channel {} is outside the 11-26 range",
+            channel
+        )))
+    }
+}
+
+fn ensure_wifi_channel(channel: u8) -> Result<(), ApiError> {
+    if (1..=165).contains(&channel) {
+        Ok(())
+    } else {
+        Err(ApiError::Validation(format!(
+            "wifi channel {} is outside the 1-165 range",
+            channel
+        )))
+    }
+}
+
+fn ensure_band(band: &str) -> Result<(), ApiError> {
+    let normalized = band.to_ascii_lowercase();
+    match normalized.as_str() {
+        "2.4ghz" | "5ghz" | "6ghz" | "dual" => Ok(()),
+        _ => Err(ApiError::Validation(format!(
+            "unsupported band '{}'; expected 2.4GHz, 5GHz, 6GHz, or dual",
+            band
+        ))),
+    }
+}
+
+fn ensure_hex(value: &str, expected_len: usize, field: &str) -> Result<(), ApiError> {
+    if value.len() != expected_len {
+        return Err(ApiError::Validation(format!(
+            "{} must be {} hexadecimal characters",
+            field, expected_len
+        )));
+    }
+    if value.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(ApiError::Validation(format!(
+            "{} must contain only hexadecimal characters",
+            field
+        )))
+    }
+}
+
+fn ensure_name(value: &str, min: usize, max: usize, field: &str) -> Result<(), ApiError> {
+    if value.len() < min || value.len() > max {
+        return Err(ApiError::Validation(format!(
+            "{} must be between {} and {} characters",
+            field, min, max
+        )));
+    }
+    if value.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+        Ok(())
+    } else {
+        Err(ApiError::Validation(format!(
+            "{} must contain printable ASCII characters",
+            field
+        )))
+    }
+}
+
+async fn publish_event(
+    state: &AppState,
+    subject: &str,
+    payload: &serde_json::Value,
+) -> Result<(), ApiError> {
+    let bytes = serde_json::to_vec(payload).map_err(|err| ApiError::Bus(err.to_string()))?;
+    state
+        .bus
+        .publish(subject, &bytes)
+        .await
+        .map_err(|err| ApiError::Bus(err.to_string()))
 }

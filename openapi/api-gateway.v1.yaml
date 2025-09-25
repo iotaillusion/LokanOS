@@ -17,6 +17,8 @@ tags:
     description: Metadata about the API gateway deployment.
   - name: Devices
     description: Proxy surface for the device registry.
+  - name: Commissioning
+    description: BLE-assisted device onboarding and credential issuance.
 components:
   securitySchemes:
     mtls:
@@ -38,6 +40,72 @@ components:
                     type: string
                 required: [code, message]
             required: [error]
+    BleHandshakeRequest:
+      type: object
+      properties:
+        qrPayload:
+          type: string
+          description: Payload encoded in the commissioning QR label (must start with `LOKAN:`).
+        deviceId:
+          type: string
+        nonce:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required: [qrPayload, deviceId, nonce]
+    BleHandshakeResponse:
+      type: object
+      properties:
+        session:
+          type: string
+        sharedKey:
+          type: string
+      required: [session, sharedKey]
+    VerifyRequest:
+      type: object
+      properties:
+        deviceId:
+          type: string
+        signature:
+          type: string
+          description: Base64 signature covering the commissioning challenge.
+        session:
+          type: string
+          nullable: true
+      required: [deviceId, signature]
+    VerifyResponse:
+      type: object
+      properties:
+        accepted:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+      required: [accepted]
+    CsrRequest:
+      type: object
+      properties:
+        deviceId:
+          type: string
+        csr:
+          type: string
+          description: Base64-encoded DER CSR payload.
+        nonce:
+          type: string
+          nullable: true
+      required: [deviceId, csr]
+    CsrResponse:
+      type: object
+      properties:
+        certificate:
+          type: string
+          description: Base64-encoded device certificate.
+        caIdentifier:
+          type: string
+          nullable: true
+      required: [certificate]
 paths:
   /v1/health:
     get:
@@ -119,4 +187,67 @@ paths:
       responses:
         '501':
           description: Not implemented.
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/commissioning/ble/handshake:
+    post:
+      tags: [Commissioning]
+      summary: Initiate the BLE commissioning handshake.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BleHandshakeRequest'
+      responses:
+        '200':
+          description: Session token and shared key negotiated with the device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BleHandshakeResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/commissioning/csr:
+    post:
+      tags: [Commissioning]
+      summary: Submit a device CSR for signing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CsrRequest'
+      responses:
+        '200':
+          description: Returns the signed device certificate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /v1/commissioning/verify:
+    post:
+      tags: [Commissioning]
+      summary: Verify the device applied the commissioned credentials.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Verification outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
           $ref: '#/components/responses/ErrorResponse'
