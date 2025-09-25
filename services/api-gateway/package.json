@@ -17,7 +17,8 @@
   "author": "LokanOS",
   "license": "UNLICENSED",
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "jest": "^30.1.3",

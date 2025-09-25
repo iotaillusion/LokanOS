@@ -1,7 +1,9 @@
 const express = require('express');
 const { registerRoutes } = require('./routes');
+const { getConfig } = require('./config');
 
-function createApp() {
+function createApp(options = {}) {
+  const resolvedConfig = options.config || getConfig();
   const app = express();
   app.use(express.json());
 
@@ -9,7 +11,9 @@ function createApp() {
     res.json({ status: 'ok' });
   });
 
-  registerRoutes(app);
+  registerRoutes(app, {
+    deviceRegistryUrl: resolvedConfig.deviceRegistryUrl
+  });
 
   app.use((req, res) => {
     res.status(404).json({ error: 'Not Found' });

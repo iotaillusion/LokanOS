@@ -1,66 +1,134 @@
-const topology = {
-  rooms: [
-    {
-      id: 'room-1',
-      name: 'Living Room',
-      floor: '1',
-      deviceIds: ['device-thermostat-1', 'device-light-1']
-    },
-    {
-      id: 'room-2',
-      name: 'Bedroom',
-      floor: '1',
-      deviceIds: ['device-light-2']
-    }
-  ],
-  devices: [
-    {
-      id: 'device-thermostat-1',
-      name: 'Thermostat',
-      type: 'thermostat',
-      roomId: 'room-1',
-      state: { temperature: 72 },
-      metadata: { manufacturer: 'Acme' }
-    },
-    {
-      id: 'device-light-1',
-      name: 'Ceiling Light',
-      type: 'light',
-      roomId: 'room-1',
-      state: { power: 'on', brightness: 80 },
-      metadata: { manufacturer: 'BrightLite' }
-    },
-    {
-      id: 'device-light-2',
-      name: 'Bedside Lamp',
-      type: 'light',
-      roomId: 'room-2',
-      state: { power: 'off' },
-      metadata: { manufacturer: 'BrightLite' }
-    }
-  ],
-  scenes: [
-    {
-      id: 'scene-movie-night',
-      name: 'Movie Night',
-      description: 'Dim lights and set comfortable temperature',
-      deviceStates: [
-        {
-          deviceId: 'device-light-1',
-          state: { power: 'on', brightness: 30 }
-        },
-        {
-          deviceId: 'device-thermostat-1',
-          state: { temperature: 70 }
-        }
-      ]
-    }
-  ]
+const DEFAULT_OPTIONS = {
+  deviceRegistryUrl: 'http://localhost:4100'
 };
 
-function registerRoutes(app) {
-  app.get('/v1/topology', (req, res) => {
-    res.json(topology);
+const fetchImpl = typeof fetch === 'function'
+  ? (...args) => fetch(...args)
+  : (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
+
+async function proxyRequest(path, options) {
+  const response = await fetchImpl(path, options);
+  const contentType = response.headers.get('content-type') || '';
+  const body = contentType.includes('application/json') ? await response.json() : await response.text();
+  if (!response.ok) {
+    const error = new Error(`Device registry responded with ${response.status}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
+  return body;
+}
+
+function registerRoutes(app, options = {}) {
+  const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
+  const baseUrl = mergedOptions.deviceRegistryUrl.replace(/\/$/, '');
+
+  app.get('/v1/topology', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices`, { method: 'GET' });
+      const devices = data.devices || [];
+      const roomsMap = new Map();
+      devices.forEach((device) => {
+        const roomId = device.roomId || device.room_id;
+        if (!roomId) {
+          return;
+        }
+        if (!roomsMap.has(roomId)) {
+          roomsMap.set(roomId, { id: roomId, deviceIds: [] });
+        }
+        roomsMap.get(roomId).deviceIds.push(device.id);
+      });
+
+      res.json({
+        rooms: Array.from(roomsMap.values()),
+        devices,
+        scenes: []
+      });
+    } catch (error) {
+      res.status(502).json({ error: 'Failed to load topology from device registry' });
+    }
+  });
+
+  app.get('/v1/devices', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices`, { method: 'GET' });
+      res.json(data);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to fetch devices' });
+    }
+  });
+
+  app.get('/v1/devices/:id', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}`, { method: 'GET' });
+      res.json(data);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Device not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to fetch device' });
+      }
+    }
+  });
+
+  app.post('/v1/devices', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(201).json(data);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to create device', details: error.body?.error });
+    }
+  });
+
+  app.put('/v1/devices/:id', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.json(data);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Device not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to update device', details: error.body?.error });
+      }
+    }
+  });
+
+  app.delete('/v1/devices/:id', async (req, res) => {
+    try {
+      await proxyRequest(`${baseUrl}/devices/${req.params.id}`, { method: 'DELETE' });
+      res.status(204).send();
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Device not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to delete device' });
+      }
+    }
+  });
+
+  app.post('/v1/devices/:id/state', async (req, res) => {
+    try {
+      const data = await proxyRequest(`${baseUrl}/devices/${req.params.id}/state`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.json(data);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Device not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to update device state', details: error.body?.error });
+      }
+    }
   });
 
   app.post('/v1/devices/:id/commands', (req, res) => {
@@ -100,6 +168,5 @@ function registerRoutes(app) {
 }
 
 module.exports = {
-  registerRoutes,
-  topology
+  registerRoutes
 };
