@@ -1,11 +1,11 @@
 [package]
-name = "common-config"
+name = "common-mdns"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dotenvy = "0.15"
-envy = "0.4"
-serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
