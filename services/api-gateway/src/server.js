@@ -15,7 +15,8 @@ function createApp(options = {}) {
     deviceRegistryUrl: resolvedConfig.deviceRegistryUrl,
     sceneServiceUrl: resolvedConfig.sceneServiceUrl,
     ruleEngineUrl: resolvedConfig.ruleEngineUrl,
-    presenceServiceUrl: resolvedConfig.presenceServiceUrl
+    presenceServiceUrl: resolvedConfig.presenceServiceUrl,
+    updaterServiceUrl: resolvedConfig.updaterServiceUrl
   });
 
   app.use((req, res) => {

@@ -2,7 +2,8 @@ const DEFAULT_OPTIONS = {
   deviceRegistryUrl: 'http://localhost:4100',
   sceneServiceUrl: 'http://localhost:4300',
   ruleEngineUrl: 'http://localhost:4400',
-  presenceServiceUrl: 'http://localhost:4500'
+  presenceServiceUrl: 'http://localhost:4500',
+  updaterServiceUrl: 'http://localhost:4600'
 };
 
 const fetchImpl = typeof fetch === 'function'
@@ -28,6 +29,7 @@ function registerRoutes(app, options = {}) {
   const sceneBaseUrl = mergedOptions.sceneServiceUrl.replace(/\/$/, '');
   const ruleEngineBaseUrl = mergedOptions.ruleEngineUrl.replace(/\/$/, '');
   const presenceBaseUrl = mergedOptions.presenceServiceUrl.replace(/\/$/, '');
+  const updaterBaseUrl = mergedOptions.updaterServiceUrl.replace(/\/$/, '');
 
   app.get('/v1/topology', async (req, res) => {
     try {
@@ -267,6 +269,32 @@ function registerRoutes(app, options = {}) {
       } else {
         res.status(error.status || 502).json({ error: 'Failed to fetch presence record' });
       }
+    }
+  });
+
+  app.post('/v1/updates/check', async (req, res) => {
+    try {
+      const { status, body } = await proxyRequest(`${updaterBaseUrl}/updates/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(status).json(body);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to check for updates', details: error.body?.error });
+    }
+  });
+
+  app.post('/v1/updates/apply', async (req, res) => {
+    try {
+      const { status, body } = await proxyRequest(`${updaterBaseUrl}/updates/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(status).json(body);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to apply update', details: error.body?.error });
     }
   });
 }

@@ -135,6 +135,48 @@ paths:
                 $ref: '#/components/schemas/RuleTestResult'
         '400':
           description: Invalid test request supplied.
+  /v1/updates/check:
+    post:
+      summary: Retrieve firmware update slot status
+      description: Returns the current slot allocation and pending update metadata for the device fleet.
+      operationId: checkUpdates
+      responses:
+        '200':
+          description: Current update orchestration state including slot assignments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirmwareUpdateStatus'
+  /v1/updates/apply:
+    post:
+      summary: Stage or finalize a firmware update
+      description: |
+        Stages a new firmware version onto the inactive slot and marks it for activation, or
+        finalizes a previously staged update when the request indicates `finalize: true`.
+      operationId: applyUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FirmwareUpdateApplyRequest'
+      responses:
+        '202':
+          description: Update was staged and activation has been scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirmwareUpdateApplyResponse'
+        '200':
+          description: Previously staged update was finalized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirmwareUpdateApplyResponse'
+        '400':
+          description: Invalid update request supplied.
+        '409':
+          description: An update is already in progress and cannot be staged again.
 components:
   securitySchemes:
     bearerAuth:
@@ -394,3 +436,109 @@ components:
       required:
         - type
       additionalProperties: false
+    FirmwareUpdateStatus:
+      type: object
+      description: Aggregated status of the updater service slot state machine.
+      properties:
+        activeSlot:
+          type: string
+          description: Identifier of the slot currently booted by the system.
+        activeVersion:
+          type: string
+          nullable: true
+          description: Firmware version running on the active slot.
+        inactiveSlot:
+          type: string
+          description: Identifier of the inactive slot.
+        inactiveVersion:
+          type: string
+          nullable: true
+          description: Firmware version stored on the inactive slot.
+        stagedSlot:
+          type: string
+          nullable: true
+          description: Slot containing a staged update awaiting activation.
+        stagedVersion:
+          type: string
+          nullable: true
+          description: Version currently staged on the inactive slot.
+        trialSlot:
+          type: string
+          nullable: true
+          description: Slot being validated prior to commitment.
+        trialVersion:
+          type: string
+          nullable: true
+          description: Version under validation on the trial slot.
+        rollbackSlot:
+          type: string
+          nullable: true
+          description: Slot that would be restored if the trial fails.
+        rollbackVersion:
+          type: string
+          nullable: true
+          description: Version that would be restored if a rollback occurs.
+        bootCount:
+          type: integer
+          format: int32
+          description: Number of boot attempts recorded for the current trial.
+        unhealthyBoots:
+          type: integer
+          format: int32
+          description: Count of consecutive unhealthy boots recorded.
+        healthFailWindow:
+          type: integer
+          format: int32
+          description: Number of unhealthy boots tolerated before rollback.
+        lastRollback:
+          $ref: '#/components/schemas/FirmwareRollbackEvent'
+      required:
+        - activeSlot
+        - inactiveSlot
+        - bootCount
+        - unhealthyBoots
+        - healthFailWindow
+    FirmwareRollbackEvent:
+      type: object
+      description: Details captured when the system performs an automatic rollback.
+      properties:
+        fromSlot:
+          type: string
+          description: Slot that was rolled back from.
+        toSlot:
+          type: string
+          description: Slot restored as the active slot.
+        failedVersion:
+          type: string
+          nullable: true
+          description: Version that failed validation.
+        restoredVersion:
+          type: string
+          nullable: true
+          description: Version restored during rollback.
+      required:
+        - fromSlot
+        - toSlot
+    FirmwareUpdateApplyRequest:
+      type: object
+      description: Request payload used to stage or finalize a firmware update.
+      properties:
+        version:
+          type: string
+          description: Firmware version identifier to stage on the inactive slot.
+        finalize:
+          type: boolean
+          description: When true, finalize a previously staged update instead of staging a new version.
+      additionalProperties: false
+    FirmwareUpdateApplyResponse:
+      type: object
+      description: Response returned after staging or finalizing an update.
+      properties:
+        status:
+          type: string
+          description: High level status of the apply operation.
+        state:
+          $ref: '#/components/schemas/FirmwareUpdateStatus'
+      required:
+        - status
+        - state
