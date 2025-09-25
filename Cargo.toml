@@ -1,6 +1,0 @@
-[workspace]
-members = []
-resolver = "2"
-
-[workspace.metadata]
-description = "LokanOS monorepo workspace"
