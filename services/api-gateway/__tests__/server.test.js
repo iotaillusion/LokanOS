@@ -204,43 +204,86 @@ function createSceneServiceStub(devices) {
   return { app, scenes };
 }
 
+function createRuleEngineStub() {
+  const app = express();
+  app.use(express.json());
+
+  const requests = [];
+
+  app.post('/v1/rules:test', (req, res) => {
+    const payload = req.body || {};
+    requests.push(payload);
+    if (!payload.ruleId || !payload.rule) {
+      res.status(400).json({ error: 'invalid payload' });
+      return;
+    }
+    const actions = Array.isArray(payload.rule.actions) ? payload.rule.actions : [];
+    res.json({
+      ruleId: payload.ruleId,
+      status: 'passed',
+      logs: ['stubbed simulation'],
+      actions,
+      errors: []
+    });
+  });
+
+  return { app, requests };
+}
+
 describe('api-gateway server', () => {
   let registryServer;
   let sceneServer;
+  let ruleEngineServer;
   let app;
   let devices;
   let scenes;
+  let ruleRequests;
 
   beforeAll((done) => {
     const { app: registryApp, devices: registryDevices } = createDeviceRegistryStub();
     devices = registryDevices;
     const { app: sceneApp, scenes: sceneStore } = createSceneServiceStub(devices);
     scenes = sceneStore;
+    const { app: ruleApp, requests } = createRuleEngineStub();
+    ruleRequests = requests;
 
     registryServer = http.createServer(registryApp);
     sceneServer = http.createServer(sceneApp);
+    ruleEngineServer = http.createServer(ruleApp);
 
-    let pending = 2;
+    let pending = 3;
+    let registryPort;
+    let scenePort;
+    let ruleEnginePort;
     function handleReady() {
       pending -= 1;
       if (pending === 0) {
-        const registryPort = registryServer.address().port;
-        const scenePort = sceneServer.address().port;
         const deviceRegistryUrl = `http://127.0.0.1:${registryPort}`;
         const sceneServiceUrl = `http://127.0.0.1:${scenePort}`;
+        const ruleEngineUrl = `http://127.0.0.1:${ruleEnginePort}`;
         app = createApp({
-          config: { port: 0, tlsDisable: true, deviceRegistryUrl, sceneServiceUrl }
+          config: { port: 0, tlsDisable: true, deviceRegistryUrl, sceneServiceUrl, ruleEngineUrl }
         });
         done();
       }
     }
 
-    registryServer.listen(0, handleReady);
-    sceneServer.listen(0, handleReady);
+    registryServer.listen(0, () => {
+      registryPort = registryServer.address().port;
+      handleReady();
+    });
+    sceneServer.listen(0, () => {
+      scenePort = sceneServer.address().port;
+      handleReady();
+    });
+    ruleEngineServer.listen(0, () => {
+      ruleEnginePort = ruleEngineServer.address().port;
+      handleReady();
+    });
   });
 
   afterAll((done) => {
-    const servers = [registryServer, sceneServer].filter(Boolean);
+    const servers = [registryServer, sceneServer, ruleEngineServer].filter(Boolean);
     let pending = servers.length;
     if (pending === 0) {
       done();
@@ -341,6 +384,28 @@ describe('api-gateway server', () => {
       const deleteResponse = await client.delete('/v1/scenes/scene-movie-night');
       expect(deleteResponse.status).toBe(204);
       expect(scenes.has('scene-movie-night')).toBe(false);
+    });
+  });
+
+  describe('rule engine routes', () => {
+    it('proxies rule simulation requests to the rule engine service', async () => {
+      const payload = {
+        ruleId: 'rule-123',
+        rule: {
+          triggers: [{ type: 'event', event: 'motion.detected' }],
+          conditions: [{ type: 'comparison', operator: 'eq', path: 'sensors.motion', value: true }],
+          actions: [{ type: 'notify', payload: { message: 'Motion detected' } }]
+        },
+        inputs: { trigger: { type: 'event', event: 'motion.detected' } }
+      };
+
+      const response = await request(app).post('/v1/rules:test').send(payload);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ ruleId: 'rule-123', status: 'passed' });
+      expect(response.body.actions).toEqual(payload.rule.actions);
+      expect(ruleRequests).toHaveLength(1);
+      expect(ruleRequests[0]).toMatchObject(payload);
     });
   });
 });

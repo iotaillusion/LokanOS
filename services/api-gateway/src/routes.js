@@ -1,6 +1,7 @@
 const DEFAULT_OPTIONS = {
   deviceRegistryUrl: 'http://localhost:4100',
-  sceneServiceUrl: 'http://localhost:4300'
+  sceneServiceUrl: 'http://localhost:4300',
+  ruleEngineUrl: 'http://localhost:4400'
 };
 
 const fetchImpl = typeof fetch === 'function'
@@ -24,6 +25,7 @@ function registerRoutes(app, options = {}) {
   const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
   const deviceBaseUrl = mergedOptions.deviceRegistryUrl.replace(/\/$/, '');
   const sceneBaseUrl = mergedOptions.sceneServiceUrl.replace(/\/$/, '');
+  const ruleEngineBaseUrl = mergedOptions.ruleEngineUrl.replace(/\/$/, '');
 
   app.get('/v1/topology', async (req, res) => {
     try {
@@ -225,23 +227,23 @@ function registerRoutes(app, options = {}) {
     }
   });
 
-  app.post('/v1/rules:test', (req, res) => {
-    const { ruleId = 'rule-test' } = req.body || {};
-    res.json({
-      ruleId,
-      status: 'passed',
-      logs: ['Rule evaluated successfully with mock data.'],
-      actions: [
-        {
-          type: 'notify',
-          payload: {
-            channel: 'operations',
-            message: 'Rule triggered notification.'
-          }
-        }
-      ],
-      errors: []
-    });
+  app.post('/v1/rules:test', async (req, res) => {
+    try {
+      const { status, body } = await proxyRequest(`${ruleEngineBaseUrl}/v1/rules:test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body || {})
+      });
+      res.status(status).json(body);
+    } catch (error) {
+      if (error.status === 400) {
+        res.status(400).json({ error: 'Invalid rule test request', details: error.body?.details });
+      } else {
+        res
+          .status(error.status || 502)
+          .json({ error: 'Failed to execute rule test', details: error.body?.error });
+      }
+    }
   });
 }
 

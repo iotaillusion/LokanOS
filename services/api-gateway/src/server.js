@@ -13,7 +13,8 @@ function createApp(options = {}) {
 
   registerRoutes(app, {
     deviceRegistryUrl: resolvedConfig.deviceRegistryUrl,
-    sceneServiceUrl: resolvedConfig.sceneServiceUrl
+    sceneServiceUrl: resolvedConfig.sceneServiceUrl,
+    ruleEngineUrl: resolvedConfig.ruleEngineUrl
   });
 
   app.use((req, res) => {

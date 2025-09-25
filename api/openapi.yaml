@@ -238,6 +238,8 @@ components:
       properties:
         ruleId:
           type: string
+        rule:
+          $ref: '#/components/schemas/RuleDefinition'
         inputs:
           type: object
           additionalProperties: true
@@ -248,6 +250,7 @@ components:
           description: Optional execution context for the rule engine.
       required:
         - ruleId
+        - rule
         - inputs
     RuleTestResult:
       type: object
@@ -286,3 +289,108 @@ components:
       required:
         - ruleId
         - status
+    RuleDefinition:
+      type: object
+      description: LokanOS rule definition expressed in the domain-specific JSON DSL.
+      properties:
+        id:
+          type: string
+          description: Optional identifier for the rule definition.
+        name:
+          type: string
+          description: Human friendly label for the rule.
+        triggers:
+          type: array
+          description: Trigger conditions that cause the rule to evaluate.
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RuleTrigger'
+        conditions:
+          type: array
+          description: Predicate checks applied before actions run.
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+        actions:
+          type: array
+          description: Ordered actions emitted when the rule passes.
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RuleAction'
+      required:
+        - triggers
+        - actions
+      additionalProperties: false
+    RuleTrigger:
+      type: object
+      description: Trigger definition supported by the rule engine.
+      properties:
+        type:
+          type: string
+          enum:
+            - event
+        event:
+          type: string
+          description: Name of the event expected from the trigger payload.
+        source:
+          type: string
+          description: Optional source identifier for the trigger event.
+        criteria:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - type: 'null'
+          description: Additional equality criteria applied to the trigger payload.
+      required:
+        - type
+      additionalProperties: false
+    RuleCondition:
+      type: object
+      description: Condition evaluated against the provided inputs.
+      properties:
+        type:
+          type: string
+          enum:
+            - comparison
+        operator:
+          type: string
+          enum:
+            - eq
+            - neq
+            - gt
+            - gte
+            - lt
+            - lte
+            - contains
+            - in
+        path:
+          type: string
+          description: Dot-separated path evaluated against the inputs object.
+        value:
+          description: Value compared against the resolved path.
+      required:
+        - type
+        - operator
+        - path
+        - value
+      additionalProperties: false
+    RuleAction:
+      type: object
+      description: Declarative action emitted by the rule engine.
+      properties:
+        type:
+          type: string
+        target:
+          type: string
+          description: Optional target identifier impacted by the action.
+        payload:
+          type: object
+          additionalProperties: true
+        parameters:
+          type: object
+          additionalProperties: true
+      required:
+        - type
+      additionalProperties: false
