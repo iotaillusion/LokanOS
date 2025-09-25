@@ -1,0 +1,10 @@
+{
+  "name": "lokanos-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API definitions and tooling for LokanOS",
+  "scripts": {
+    "generate": "echo \"OpenAPI generation placeholder\""
+  },
+  "devDependencies": {}
+}
