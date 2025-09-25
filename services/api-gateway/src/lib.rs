@@ -6,27 +6,39 @@ pub mod error;
 pub mod rate_limit;
 pub mod rbac;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use audit::{AuditClient, AuditEvent};
 use axum::body::Body;
-use axum::extract::{Extension, State};
-use axum::http::{HeaderMap, Request, StatusCode};
-use axum::middleware::{from_fn_with_state, Next};
+use axum::extract::{connect_info::ConnectInfo, Extension, State};
+use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
+use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use commissioning::{ble_handshake, submit_csr, verify_credentials};
 use common_msgbus::MessageBus;
+use common_obs::{counter, gauge, Counter, Gauge, SpanExt};
 use device_registry::DeviceRegistryClient;
 use error::ApiError;
+use once_cell::sync::Lazy;
 use rate_limit::RateLimiter;
 use rbac::{PolicyError, RbacPolicy, Role};
 use serde_json::json;
+use tracing::info_span;
+use uuid::Uuid;
 
 pub const SERVICE_NAME: &str = "api-gateway";
 pub const ROLE_HEADER: &str = "x-lokan-role";
 pub const SUBJECT_HEADER: &str = "x-lokan-subject";
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
+static REQUESTS_TOTAL: Lazy<Arc<dyn Counter>> = Lazy::new(|| counter("api_gateway_requests_total"));
+static REQUESTS_INFLIGHT: Lazy<Arc<dyn Gauge>> =
+    Lazy::new(|| gauge("api_gateway_requests_inflight"));
 
 #[derive(Clone)]
 pub struct AppState {
@@ -44,7 +56,7 @@ pub struct UserContext {
 }
 
 pub fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let protected_routes = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/info", get(info))
         .route(
@@ -56,7 +68,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/commissioning/verify", post(verify_credentials))
         .layer(from_fn_with_state(state.clone(), rate_limit_guard))
         .layer(from_fn_with_state(state.clone(), rbac_guard))
-        .layer(Extension(state.clone()))
+        .layer(Extension(state.clone()));
+
+    Router::new()
+        .route("/metrics", get(metrics))
+        .merge(protected_routes)
+        .layer(from_fn(request_context))
         .with_state(state)
 }
 
@@ -128,6 +145,111 @@ pub async fn rbac_guard(
     Ok(response)
 }
 
+async fn request_context(mut req: Request<Body>, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let remote_addr = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let user_agent = req
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let request_id = req
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            let id = Uuid::new_v4().to_string();
+            req.headers_mut()
+                .insert(REQUEST_ID_HEADER, HeaderValue::from_str(&id).unwrap());
+            id
+        });
+
+    REQUESTS_TOTAL.increment(1);
+    let _inflight = InFlightGuard::new();
+
+    let span = info_span!(
+        "http.request",
+        method = %method,
+        path = %path,
+        remote_addr = remote_addr.as_str(),
+        user_agent = user_agent.as_str(),
+        request_id = %request_id
+    );
+    span.with_req(&request_id);
+
+    let start = Instant::now();
+    let mut response = {
+        let _guard = span.enter();
+        tracing::info!(
+            event = "request_start",
+            method = %method,
+            path = %path,
+            remote_addr = remote_addr.as_str(),
+            user_agent = user_agent.as_str()
+        );
+        next.run(req).await
+    };
+
+    let status = response.status();
+    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+    {
+        let _guard = span.enter();
+        tracing::info!(
+            event = "request_end",
+            method = %method,
+            path = %path,
+            status = status.as_u16(),
+            latency_ms,
+            remote_addr = remote_addr.as_str(),
+            user_agent = user_agent.as_str()
+        );
+    }
+
+    response.headers_mut().insert(
+        REQUEST_ID_HEADER,
+        HeaderValue::from_str(&request_id).unwrap(),
+    );
+
+    response
+}
+
+async fn metrics() -> impl IntoResponse {
+    let uptime = START_TIME.elapsed().as_secs_f64();
+    let body = format!(
+        concat!(
+            "# HELP process_uptime_seconds Service uptime in seconds\n",
+            "# TYPE process_uptime_seconds gauge\n",
+            "process_uptime_seconds {uptime:.3}\n",
+            "# HELP api_gateway_requests_total Total HTTP requests handled\n",
+            "# TYPE api_gateway_requests_total counter\n",
+            "api_gateway_requests_total {total}\n",
+            "# HELP api_gateway_requests_inflight Current in-flight HTTP requests\n",
+            "# TYPE api_gateway_requests_inflight gauge\n",
+            "api_gateway_requests_inflight {inflight}\n"
+        ),
+        uptime = uptime,
+        total = REQUESTS_TOTAL.value(),
+        inflight = REQUESTS_INFLIGHT.value()
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4"),
+        )],
+        body,
+    )
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "service": SERVICE_NAME }))
 }
@@ -184,4 +306,19 @@ pub fn extract_subject(headers: &HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "anonymous".to_string())
+}
+
+struct InFlightGuard;
+
+impl InFlightGuard {
+    fn new() -> Self {
+        REQUESTS_INFLIGHT.increment(1);
+        Self
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        REQUESTS_INFLIGHT.increment(-1);
+    }
 }
