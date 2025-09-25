@@ -1,7 +1,8 @@
 const DEFAULT_OPTIONS = {
   deviceRegistryUrl: 'http://localhost:4100',
   sceneServiceUrl: 'http://localhost:4300',
-  ruleEngineUrl: 'http://localhost:4400'
+  ruleEngineUrl: 'http://localhost:4400',
+  presenceServiceUrl: 'http://localhost:4500'
 };
 
 const fetchImpl = typeof fetch === 'function'
@@ -26,6 +27,7 @@ function registerRoutes(app, options = {}) {
   const deviceBaseUrl = mergedOptions.deviceRegistryUrl.replace(/\/$/, '');
   const sceneBaseUrl = mergedOptions.sceneServiceUrl.replace(/\/$/, '');
   const ruleEngineBaseUrl = mergedOptions.ruleEngineUrl.replace(/\/$/, '');
+  const presenceBaseUrl = mergedOptions.presenceServiceUrl.replace(/\/$/, '');
 
   app.get('/v1/topology', async (req, res) => {
     try {
@@ -242,6 +244,28 @@ function registerRoutes(app, options = {}) {
         res
           .status(error.status || 502)
           .json({ error: 'Failed to execute rule test', details: error.body?.error });
+      }
+    }
+  });
+
+  app.get('/v1/presence', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${presenceBaseUrl}/presence`, { method: 'GET' });
+      res.json(body);
+    } catch (error) {
+      res.status(error.status || 502).json({ error: 'Failed to fetch presence data' });
+    }
+  });
+
+  app.get('/v1/presence/:userId', async (req, res) => {
+    try {
+      const { body } = await proxyRequest(`${presenceBaseUrl}/presence/${req.params.userId}`, { method: 'GET' });
+      res.json(body);
+    } catch (error) {
+      if (error.status === 404) {
+        res.status(404).json({ error: 'Presence not found' });
+      } else {
+        res.status(error.status || 502).json({ error: 'Failed to fetch presence record' });
       }
     }
   });
