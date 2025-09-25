@@ -49,3 +49,9 @@ to stop the runtime gracefully.
 
 The modular workspace enables tailoring LokanOS to a variety of smart-home hub
 form factors while keeping the core runtime headless and lightweight.
+
+## Observability
+
+- Use `common-obs::ObsInit::init(service_name)` to install structured JSON logging with trace and request identifiers.
+- Access lightweight counters, gauges, and histograms via the `common-obs::metrics` facade when services need to emit local metrics.
+

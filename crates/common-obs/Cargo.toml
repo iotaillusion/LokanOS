@@ -2,8 +2,12 @@
 name = "common-obs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["LokanOS Team"]
+description = "Shared observability utilities with JSON logging and lightweight metrics facade"
 
 [dependencies]
-axum = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
+once_cell = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry", "env-filter"] }
