@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/lokan-core",
+    "crates/lokan-event",
+    "crates/lokan-device",
+    "crates/lokan-automation",
+    "crates/lokan-network",
+    "crates/hub-daemon",
+]
+resolver = "2"
