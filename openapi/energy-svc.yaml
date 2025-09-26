@@ -1,0 +1,127 @@
+openapi: 3.1.0
+info:
+  title: LokanOS Energy Service
+  version: 0.1.0
+  description: Aggregates energy usage telemetry for optimization workflows.
+servers:
+  - url: https://energy-svc.lokanos.local
+    description: Internal service mesh endpoint.
+tags:
+  - name: Diagnostics
+    description: Common diagnostic endpoints across LokanOS services.
+  - name: Energy Service
+    description: Energy usage reporting and forecasting APIs.
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    DiagnosticInfo:
+      type: object
+      properties:
+        uptimeSeconds:
+          type: integer
+          format: int64
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required:
+        - uptimeSeconds
+  responses:
+    ErrorResponse:
+      description: Structured error payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+paths:
+  /energy-svc/health:
+    get:
+      operationId: EnergyServiceHealth
+      summary: Energy service health probe.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /energy-svc/metrics:
+    get:
+      operationId: EnergyServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /energy-svc/diag:
+    get:
+      operationId: EnergyServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /energy-svc/energy-report:
+    get:
+      operationId: EnergyServiceGetReport
+      summary: Retrieve aggregated energy usage data.
+      tags:
+        - Energy Service
+      security:
+        - mtls: []
+      responses:
+        '200':
+          description: Aggregated energy usage summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    type: string
+                  consumptionKwh:
+                    type: number
+                    format: float
+                required:
+                  - period
+                  - consumptionKwh
+        '401':
+          $ref: '#/components/responses/ErrorResponse'

@@ -1,0 +1,125 @@
+openapi: 3.1.0
+info:
+  title: LokanOS API Gateway
+  version: 0.1.0
+  description: Core routing surface for LokanOS northbound APIs.
+servers:
+  - url: https://api-gateway.lokanos.local
+    description: Internal service mesh endpoint.
+tags:
+  - name: Diagnostics
+    description: Common diagnostic endpoints across LokanOS services.
+  - name: API Gateway
+    description: Administration endpoints for the API gateway routing plane.
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    DiagnosticInfo:
+      type: object
+      properties:
+        uptimeSeconds:
+          type: integer
+          format: int64
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required:
+        - uptimeSeconds
+  responses:
+    ErrorResponse:
+      description: Structured error payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+paths:
+  /api-gateway/health:
+    get:
+      operationId: ApiGatewayHealth
+      summary: Gateway health check.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /api-gateway/metrics:
+    get:
+      operationId: ApiGatewayMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api-gateway/diag:
+    get:
+      operationId: ApiGatewayDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /api-gateway/routes:
+    get:
+      operationId: ApiGatewayListRoutes
+      summary: Enumerate configured upstream routes.
+      tags:
+        - API Gateway
+      security:
+        - mtls: []
+      responses:
+        '200':
+          description: Registered routes exposed by the gateway.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - routes
+        '401':
+          $ref: '#/components/responses/ErrorResponse'

@@ -1,0 +1,126 @@
+openapi: 3.1.0
+info:
+  title: LokanOS Updater Service
+  version: 0.1.0
+  description: Coordinates over-the-air updates for the LokanOS fleet.
+servers:
+  - url: https://updater.lokanos.local
+    description: Internal service mesh endpoint.
+tags:
+  - name: Diagnostics
+    description: Common diagnostic endpoints across LokanOS services.
+  - name: Updater Service
+    description: Firmware and software update orchestration APIs.
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    DiagnosticInfo:
+      type: object
+      properties:
+        uptimeSeconds:
+          type: integer
+          format: int64
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required:
+        - uptimeSeconds
+  responses:
+    ErrorResponse:
+      description: Structured error payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+paths:
+  /updater/health:
+    get:
+      operationId: UpdaterServiceHealth
+      summary: Updater service health probe.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /updater/metrics:
+    get:
+      operationId: UpdaterServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /updater/diag:
+    get:
+      operationId: UpdaterServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /updater/available:
+    get:
+      operationId: UpdaterServiceAvailable
+      summary: Enumerate available software update payloads.
+      tags:
+        - Updater Service
+      security:
+        - mtls: []
+      responses:
+        '200':
+          description: Update packages awaiting deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updates:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                  - updates
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
