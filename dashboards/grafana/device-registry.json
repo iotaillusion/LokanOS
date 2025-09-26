@@ -1,0 +1,228 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "req/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(lokan_device_registry_requests_total{verb=\"create\",env=~\"$environment\"}[5m]))",
+          "legendFormat": "Create",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(lokan_device_registry_requests_total{verb=\"read\",env=~\"$environment\"}[5m]))",
+          "legendFormat": "Read",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(lokan_device_registry_requests_total{verb=\"update\",env=~\"$environment\"}[5m]))",
+          "legendFormat": "Update",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate(lokan_device_registry_requests_total{verb=\"delete\",env=~\"$environment\"}[5m]))",
+          "legendFormat": "Delete",
+          "refId": "D"
+        }
+      ],
+      "title": "Device Registry CRUD Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "msg/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(lokan_device_registry_subscription_fanout_total{env=~\"$environment\"}[5m]))",
+          "legendFormat": "Fanout deliveries",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(lokan_device_registry_subscription_failures_total{env=~\"$environment\"}[5m]))",
+          "legendFormat": "Fanout failures",
+          "refId": "B"
+        }
+      ],
+      "title": "Subscription Fanout",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {}
+      },
+      "targets": [
+        {
+          "expr": "sum(lokan_device_registry_pending_subscriptions{env=~\"$environment\"})",
+          "legendFormat": "Pending subscriptions",
+          "refId": "A"
+        }
+      ],
+      "title": "Pending Subscription Backlog",
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "lokan",
+    "device-registry"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "prod",
+          "value": "prod"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(lokan_device_registry_requests_total, env)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "environment",
+        "options": [],
+        "query": {
+          "query": "label_values(lokan_device_registry_requests_total, env)",
+          "refId": "Prometheus-environment-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h"],
+    "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+  },
+  "timezone": "browser",
+  "title": "Device Registry",
+  "uid": "lokan-device-registry",
+  "version": 1
+}
