@@ -37,7 +37,7 @@ e2e:
 	@echo "e2e tests are not implemented yet"
 
 package:
-	@echo "Packaging pipeline is not implemented yet"
+	os/images/build.sh
 
 sbom:
 	@echo "SBOM generation is not implemented yet"
