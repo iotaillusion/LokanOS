@@ -48,6 +48,7 @@ impl ObsInit {
     where
         W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
     {
+        metrics::init(service);
         let env_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| {
             if cfg!(debug_assertions) {
                 "debug".to_string()
@@ -457,475 +458,37 @@ fn escape(input: &str) -> String {
     out
 }
 
-/// Lightweight metrics facade.
-pub mod metrics {
-    use super::*;
-
-    use once_cell::sync::Lazy;
-    use std::fmt::Write as FmtWrite;
-
-    const DEFAULT_BUCKETS: &[f64] = &[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0];
-
-    pub const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
-
-    #[derive(Default)]
-    struct Registry {
-        families: RwLock<Vec<MetricFamily>>,
-    }
-
-    impl Registry {
-        fn register_counter(&self, counter: Arc<CounterVecInner>) {
-            let mut guard = self.families.write().expect("lock poisoned");
-            if guard.iter().any(|family| match family {
-                MetricFamily::Counter(existing) => existing.name == counter.name,
-                _ => false,
-            }) {
-                return;
-            }
-            guard.push(MetricFamily::Counter(counter));
-        }
-
-        fn register_histogram(&self, histogram: Arc<HistogramVecInner>) {
-            let mut guard = self.families.write().expect("lock poisoned");
-            if guard.iter().any(|family| match family {
-                MetricFamily::Histogram(existing) => existing.name == histogram.name,
-                _ => false,
-            }) {
-                return;
-            }
-            guard.push(MetricFamily::Histogram(histogram));
-        }
-
-        fn encode(&self) -> String {
-            let mut output = String::new();
-            let guard = self.families.read().expect("lock poisoned");
-            for family in guard.iter() {
-                match family {
-                    MetricFamily::Counter(counter) => {
-                        writeln!(output, "# HELP {} {}", counter.name, counter.help)
-                            .expect("write metrics");
-                        writeln!(output, "# TYPE {} counter", counter.name).expect("write metrics");
-
-                        let mut samples = counter.collect();
-                        samples.sort_by(|a, b| a.0.cmp(&b.0));
-                        for (labels, value) in samples {
-                            write!(output, "{}", counter.name).expect("write metrics");
-                            write_labels(&mut output, counter.label_names, &labels);
-                            writeln!(output, " {}", value).expect("write metrics");
-                        }
-                    }
-                    MetricFamily::Histogram(histogram) => {
-                        writeln!(output, "# HELP {} {}", histogram.name, histogram.help)
-                            .expect("write metrics");
-                        writeln!(output, "# TYPE {} histogram", histogram.name)
-                            .expect("write metrics");
-
-                        let mut samples = histogram.collect();
-                        samples.sort_by(|a, b| a.0.cmp(&b.0));
-                        for (labels, snapshot) in samples {
-                            let mut cumulative = 0u64;
-                            for (idx, bound) in histogram.buckets.iter().enumerate() {
-                                cumulative += snapshot.counts[idx];
-                                let mut label_names = histogram.label_names.to_vec();
-                                label_names.push("le");
-                                let mut label_values = labels.clone();
-                                label_values.push(format_float(*bound));
-                                write!(output, "{}", histogram.name).expect("write metrics");
-                                write_labels(&mut output, &label_names, &label_values);
-                                writeln!(output, " {}", cumulative).expect("write metrics");
-                            }
-
-                            cumulative += snapshot
-                                .counts
-                                .get(histogram.buckets.len())
-                                .copied()
-                                .unwrap_or(0);
-                            let mut label_names = histogram.label_names.to_vec();
-                            label_names.push("le");
-                            let mut label_values = labels.clone();
-                            label_values.push(String::from("+Inf"));
-                            write!(output, "{}", histogram.name).expect("write metrics");
-                            write_labels(&mut output, &label_names, &label_values);
-                            writeln!(output, " {}", cumulative).expect("write metrics");
-
-                            write!(output, "{}_sum", histogram.name).expect("write metrics");
-                            write_labels(&mut output, histogram.label_names, &labels);
-                            writeln!(output, " {:.6}", snapshot.sum).expect("write metrics");
-
-                            write!(output, "{}_count", histogram.name).expect("write metrics");
-                            write_labels(&mut output, histogram.label_names, &labels);
-                            writeln!(output, " {}", snapshot.count).expect("write metrics");
-                        }
-                    }
-                }
-            }
-
-            output
-        }
-    }
-
-    fn registry() -> &'static Registry {
-        static REGISTRY: OnceCell<Registry> = OnceCell::new();
-        REGISTRY.get_or_init(Registry::default)
-    }
-
-    enum MetricFamily {
-        Counter(Arc<CounterVecInner>),
-        Histogram(Arc<HistogramVecInner>),
-    }
-
-    #[derive(Default)]
-    struct CounterValue {
-        value: AtomicU64,
-    }
-
-    impl CounterValue {
-        fn increment(&self, amount: u64) {
-            self.value.fetch_add(amount, Ordering::Relaxed);
-        }
-
-        fn get(&self) -> u64 {
-            self.value.load(Ordering::Relaxed)
-        }
-    }
-
-    struct CounterVecInner {
-        name: &'static str,
-        help: &'static str,
-        label_names: &'static [&'static str],
-        values: Mutex<HashMap<Vec<String>, Arc<CounterValue>>>,
-    }
-
-    impl CounterVecInner {
-        fn new(
-            name: &'static str,
-            help: &'static str,
-            label_names: &'static [&'static str],
-        ) -> Self {
-            Self {
-                name,
-                help,
-                label_names,
-                values: Mutex::new(HashMap::new()),
-            }
-        }
-
-        fn get_or_create(&self, label_values: &[&str]) -> Arc<CounterValue> {
-            assert_eq!(
-                self.label_names.len(),
-                label_values.len(),
-                "label value count mismatch"
-            );
-            let mut guard = self.values.lock().expect("lock poisoned");
-            let key: Vec<String> = label_values.iter().map(|value| value.to_string()).collect();
-            Arc::clone(
-                guard
-                    .entry(key)
-                    .or_insert_with(|| Arc::new(CounterValue::default())),
-            )
-        }
-
-        fn collect(&self) -> Vec<(Vec<String>, u64)> {
-            let guard = self.values.lock().expect("lock poisoned");
-            guard
-                .iter()
-                .map(|(labels, value)| (labels.clone(), value.get()))
-                .collect()
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct CounterVec {
-        inner: Arc<CounterVecInner>,
-    }
-
-    impl CounterVec {
-        pub fn with_label_values(&self, labels: &[&str]) -> Counter {
-            Counter {
-                inner: self.inner.get_or_create(labels),
-            }
-        }
-
-        pub fn inc(&self, labels: &[&str], amount: u64) {
-            self.with_label_values(labels).inc(amount);
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct Counter {
-        inner: Arc<CounterValue>,
-    }
-
-    impl Counter {
-        pub fn inc(&self, amount: u64) {
-            self.inner.increment(amount);
-        }
-    }
-
-    struct HistogramVecInner {
-        name: &'static str,
-        help: &'static str,
-        label_names: &'static [&'static str],
-        buckets: &'static [f64],
-        values: Mutex<HashMap<Vec<String>, Arc<HistogramValue>>>,
-    }
-
-    impl HistogramVecInner {
-        fn new(
-            name: &'static str,
-            help: &'static str,
-            label_names: &'static [&'static str],
-            buckets: &'static [f64],
-        ) -> Self {
-            Self {
-                name,
-                help,
-                label_names,
-                buckets,
-                values: Mutex::new(HashMap::new()),
-            }
-        }
-
-        fn get_or_create(&self, label_values: &[&str]) -> Arc<HistogramValue> {
-            assert_eq!(
-                self.label_names.len(),
-                label_values.len(),
-                "label value count mismatch"
-            );
-            let mut guard = self.values.lock().expect("lock poisoned");
-            let key: Vec<String> = label_values.iter().map(|value| value.to_string()).collect();
-            Arc::clone(
-                guard
-                    .entry(key)
-                    .or_insert_with(|| HistogramValue::new(self.buckets.len())),
-            )
-        }
-
-        fn collect(&self) -> Vec<(Vec<String>, HistogramSnapshot)> {
-            let guard = self.values.lock().expect("lock poisoned");
-            guard
-                .iter()
-                .map(|(labels, value)| (labels.clone(), value.snapshot()))
-                .collect()
-        }
-    }
-
-    struct HistogramValue {
-        state: Mutex<HistogramState>,
-    }
-
-    impl HistogramValue {
-        fn new(bucket_count: usize) -> Arc<Self> {
-            Arc::new(Self {
-                state: Mutex::new(HistogramState {
-                    counts: vec![0; bucket_count + 1],
-                    sum: 0.0,
-                    count: 0,
-                }),
-            })
-        }
-
-        fn observe(&self, buckets: &[f64], value: f64) {
-            let mut state = self.state.lock().expect("lock poisoned");
-            state.count += 1;
-            state.sum += value;
-
-            let mut idx = buckets.len();
-            for (i, bound) in buckets.iter().enumerate() {
-                if value <= *bound {
-                    idx = i;
-                    break;
-                }
-            }
-            if let Some(slot) = state.counts.get_mut(idx) {
-                *slot += 1;
-            }
-        }
-
-        fn snapshot(&self) -> HistogramSnapshot {
-            let state = self.state.lock().expect("lock poisoned");
-            HistogramSnapshot {
-                counts: state.counts.clone(),
-                sum: state.sum,
-                count: state.count,
-            }
-        }
-    }
-
-    struct HistogramState {
-        counts: Vec<u64>,
-        sum: f64,
-        count: u64,
-    }
-
-    #[derive(Clone)]
-    pub struct HistogramVec {
-        inner: Arc<HistogramVecInner>,
-    }
-
-    impl HistogramVec {
-        pub fn with_label_values(&self, labels: &[&str]) -> Histogram {
-            Histogram {
-                inner: self.inner.get_or_create(labels),
-                buckets: self.inner.buckets,
-            }
-        }
-
-        pub fn observe(&self, labels: &[&str], value: f64) {
-            self.with_label_values(labels).observe(value);
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct Histogram {
-        inner: Arc<HistogramValue>,
-        buckets: &'static [f64],
-    }
-
-    impl Histogram {
-        pub fn observe(&self, value: f64) {
-            self.inner.observe(self.buckets, value);
-        }
-    }
-
-    #[derive(Clone)]
-    struct HistogramSnapshot {
-        counts: Vec<u64>,
-        sum: f64,
-        count: u64,
-    }
-
-    fn write_labels(output: &mut String, names: &[&str], values: &[String]) {
-        if names.is_empty() {
-            return;
-        }
-
-        output.push('{');
-        for (idx, (name, value)) in names.iter().zip(values.iter()).enumerate() {
-            if idx > 0 {
-                output.push(',');
-            }
-            let escaped = escape_label_value(value);
-            write!(output, r#"{}="{}""#, name, escaped).expect("write metrics");
-        }
-        output.push('}');
-    }
-
-    fn escape_label_value(value: &str) -> String {
-        let mut escaped = String::with_capacity(value.len());
-        for ch in value.chars() {
-            match ch {
-                '\\' => escaped.push_str("\\\\"),
-                '"' => escaped.push_str("\\\""),
-                '\n' => escaped.push_str("\\n"),
-                _ => escaped.push(ch),
-            }
-        }
-        escaped
-    }
-
-    fn format_float(value: f64) -> String {
-        let mut formatted = format!("{value:.6}");
-        while formatted.contains('.') && formatted.ends_with('0') {
-            formatted.pop();
-        }
-        if formatted.ends_with('.') {
-            formatted.push('0');
-        }
-        if formatted.is_empty() {
-            formatted.push('0');
-        }
-        formatted
-    }
-
-    pub fn default_buckets() -> &'static [f64] {
-        DEFAULT_BUCKETS
-    }
-
-    pub fn register_counter(
-        name: &'static str,
-        help: &'static str,
-        label_names: &'static [&'static str],
-    ) -> CounterVec {
-        let inner = Arc::new(CounterVecInner::new(name, help, label_names));
-        registry().register_counter(inner.clone());
-        CounterVec { inner }
-    }
-
-    pub fn register_histogram(
-        name: &'static str,
-        help: &'static str,
-        label_names: &'static [&'static str],
-        buckets: &'static [f64],
-    ) -> HistogramVec {
-        let inner = Arc::new(HistogramVecInner::new(name, help, label_names, buckets));
-        registry().register_histogram(inner.clone());
-        HistogramVec { inner }
-    }
-
-    pub fn encode_prometheus() -> String {
-        let _ = http_requests_total();
-        let _ = handler_latency_seconds();
-        let _ = msgbus_publish_total();
-        let _ = msgbus_subscribe_total();
-        registry().encode()
-    }
-
-    static HTTP_REQUESTS_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
-        register_counter(
-            "http_requests_total",
-            "Total HTTP requests received",
-            &["service", "route", "code"],
-        )
-    });
-
-    static HANDLER_LATENCY_SECONDS: Lazy<HistogramVec> = Lazy::new(|| {
-        register_histogram(
-            "handler_latency_seconds",
-            "HTTP handler latency in seconds",
-            &["service", "route"],
-            DEFAULT_BUCKETS,
-        )
-    });
-
-    static MSGBUS_PUBLISH_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
-        register_counter(
-            "msgbus_publish_total",
-            "Total messages published to the message bus",
-            &["service", "subject"],
-        )
-    });
-
-    static MSGBUS_SUBSCRIBE_TOTAL: Lazy<CounterVec> = Lazy::new(|| {
-        register_counter(
-            "msgbus_subscribe_total",
-            "Total subscriptions created on the message bus",
-            &["service", "subject"],
-        )
-    });
-
-    pub fn http_requests_total() -> &'static CounterVec {
-        &HTTP_REQUESTS_TOTAL
-    }
-
-    pub fn handler_latency_seconds() -> &'static HistogramVec {
-        &HANDLER_LATENCY_SECONDS
-    }
-
-    pub fn msgbus_publish_total() -> &'static CounterVec {
-        &MSGBUS_PUBLISH_TOTAL
-    }
-
-    pub fn msgbus_subscribe_total() -> &'static CounterVec {
-        &MSGBUS_SUBSCRIBE_TOTAL
-    }
-}
+mod metrics;
 
 pub use metrics::{
-    encode_prometheus as encode_prometheus_metrics, handler_latency_seconds, http_requests_total,
-    msgbus_publish_total, msgbus_subscribe_total, register_counter, register_histogram, Counter,
-    CounterVec, Histogram, HistogramVec, PROMETHEUS_CONTENT_TYPE,
+    build_info, encode_prometheus as encode_prometheus_metrics, handler_latency_seconds,
+    http_requests_total, msgbus_publish_total, msgbus_subscribe_total, process_uptime_seconds,
+    register_counter, register_gauge, register_histogram, Counter, CounterVec, Gauge, GaugeVec,
+    Histogram, HistogramVec, PROMETHEUS_CONTENT_TYPE,
 };
+
+pub fn service_name() -> Option<&'static str> {
+    metrics::service_name()
+}
+
+#[macro_export]
+macro_rules! histogram_observe {
+    ($metric:ident, $labels:expr, $value:expr) => {{
+        $crate::$metric().observe($labels, $value);
+    }};
+}
+
+#[macro_export]
+macro_rules! http_request_observe {
+    ($route:expr, $code:expr, $value:expr) => {{
+        if let Some(service) = $crate::service_name() {
+            let route_ref = $route;
+            let code_ref = $code;
+            $crate::http_requests_total().inc(&[service, route_ref, code_ref], 1);
+            $crate::handler_latency_seconds().observe(&[service, route_ref], $value);
+        }
+    }};
+}
 
 #[cfg(test)]
 mod tests {
@@ -949,6 +512,25 @@ mod tests {
             ObsInit::init("test"),
             Err(ObsInitError::AlreadyInitialized)
         ));
+    }
+
+    #[test]
+    fn histogram_export_writes_prometheus_fields() {
+        init_global();
+        let histogram = register_histogram(
+            "test_histogram_seconds",
+            "Test histogram output",
+            &["service"],
+            crate::metrics::default_buckets(),
+        );
+        histogram.ensure(&["test-service"]);
+        histogram.observe(&["test-service"], 0.2);
+
+        let encoded = encode_prometheus_metrics();
+        assert!(encoded
+            .contains("test_histogram_seconds_bucket{service=\"test-service\",le=\"0.25\"} 1"));
+        assert!(encoded.contains("test_histogram_seconds_sum{service=\"test-service\"} 0.2"));
+        assert!(encoded.contains("test_histogram_seconds_count{service=\"test-service\"} 1"));
     }
 
     #[test]

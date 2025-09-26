@@ -18,8 +18,8 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use common_config::service_port;
 use common_obs::{
-    encode_prometheus_metrics, handler_latency_seconds, health_router, http_requests_total,
-    ObsInit, PROMETHEUS_CONTENT_TYPE,
+    encode_prometheus_metrics, health_router, http_request_observe, ObsInit,
+    PROMETHEUS_CONTENT_TYPE,
 };
 
 use std::time::Instant;
@@ -186,8 +186,7 @@ async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
     let latency = start.elapsed().as_secs_f64();
     let status = response.status().as_u16().to_string();
 
-    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status.as_str()], 1);
-    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
+    http_request_observe!(route.as_str(), status.as_str(), latency);
 
     response
 }

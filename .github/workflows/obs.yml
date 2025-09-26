@@ -1,4 +1,4 @@
-name: C SDK
+name: Observability and SDKs
 
 on:
   push:
@@ -6,7 +6,34 @@ on:
   pull_request:
 
 jobs:
-  sdk-c:
+  oas:
+    name: Bundle OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate bundled OpenAPI specification
+        run: make oas
+
+  ts-sdk:
+    name: Generate TypeScript SDK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate TypeScript SDK
+        run: make sdks
+
+  c-sdk:
+    name: Build C SDK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -49,3 +76,25 @@ jobs:
       - name: Shutdown mock scene service
         if: always()
         run: docker compose -f docker/dev/docker-compose.yml down -v
+
+  obs-smoke:
+    name: Observability smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Launch updater service via Docker Compose
+        run: docker compose -f docker/compose.dev.yml up -d updater
+
+      - name: Validate metrics exposition
+        env:
+          METRICS_URL: http://127.0.0.1:8006/metrics
+        run: bash scripts/ci/check-metrics.sh
+
+      - name: Shutdown updater service
+        if: always()
+        run: docker compose -f docker/compose.dev.yml down -v

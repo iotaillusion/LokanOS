@@ -21,8 +21,7 @@ use axum::{Json, Router};
 use commissioning::{ble_handshake, submit_csr, verify_credentials};
 use common_msgbus::MessageBus;
 use common_obs::{
-    encode_prometheus_metrics, handler_latency_seconds, http_requests_total, SpanExt,
-    PROMETHEUS_CONTENT_TYPE,
+    encode_prometheus_metrics, http_request_observe, SpanExt, PROMETHEUS_CONTENT_TYPE,
 };
 use device_registry::DeviceRegistryClient;
 use error::ApiError;
@@ -219,8 +218,7 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
     }
 
     let status_label = status.as_u16().to_string();
-    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status_label.as_str()], 1);
-    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
+    http_request_observe!(route.as_str(), status_label.as_str(), latency);
 
     response.headers_mut().insert(
         REQUEST_ID_HEADER,
