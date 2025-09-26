@@ -1,0 +1,15 @@
+version: "3.9"
+services:
+  mock-scene:
+    image: python:3.11-slim
+    command: ["python", "/app/server.py"]
+    volumes:
+      - ../dev/server.py:/app/server.py:ro
+      - ../../security/pki/dev/out:/certs:ro
+    environment:
+      LOKAN_SERVER_CERT: /certs/services/scene-svc/scene-svc.cert.pem
+      LOKAN_SERVER_KEY: /certs/services/scene-svc/scene-svc.key.pem
+      LOKAN_CA_CERT: /certs/ca/lokan-dev-root-ca.cert.pem
+      LOKAN_BIND: 0.0.0.0:9443
+    ports:
+      - "9443:9443"

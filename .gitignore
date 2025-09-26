@@ -6,3 +6,6 @@ Cargo.lock
 *.swp
 .idea/
 .vscode/
+sdks/c/build/
+sdks/c/dist/
+security/pki/dev/out/

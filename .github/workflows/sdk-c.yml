@@ -1,0 +1,51 @@
+name: C SDK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sdk-c:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Generate development certificates
+        run: |
+          rm -rf security/pki/dev/out
+          chmod +x security/pki/dev/*.sh
+          ./security/pki/dev/generate_ca.sh
+          ./security/pki/dev/generate_server_cert.sh scene-svc localhost
+          ./security/pki/dev/generate_client_cert.sh sdk-client
+
+      - name: Start mock scene service
+        run: |
+          docker compose -f docker/dev/docker-compose.yml up -d
+          until curl --fail --silent --cert security/pki/dev/out/clients/sdk-client/sdk-client.cert.pem \
+            --key security/pki/dev/out/clients/sdk-client/sdk-client.key.pem \
+            --cacert security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem \
+            https://localhost:9443/scene-svc/health >/dev/null; do
+            sleep 1
+          done
+
+      - name: Build C SDK
+        run: make sdk-c
+
+      - name: Run health example
+        env:
+          LOKAN_SDK_BASE_URL: https://localhost:9443/scene-svc
+          LOKAN_SDK_CLIENT_CERT: ${{ github.workspace }}/security/pki/dev/out/clients/sdk-client/sdk-client.cert.pem
+          LOKAN_SDK_CLIENT_KEY: ${{ github.workspace }}/security/pki/dev/out/clients/sdk-client/sdk-client.key.pem
+          LOKAN_SDK_CA_CERT: ${{ github.workspace }}/security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem
+        run: sdks/c/dist/bin/lokan_health_example
+
+      - name: Shutdown mock scene service
+        if: always()
+        run: docker compose -f docker/dev/docker-compose.yml down -v
