@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use audit::{AuditClient, AuditEvent};
 use axum::body::Body;
-use axum::extract::{connect_info::ConnectInfo, Extension, State};
+use axum::extract::{connect_info::ConnectInfo, Extension, MatchedPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
@@ -20,10 +20,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use commissioning::{ble_handshake, submit_csr, verify_credentials};
 use common_msgbus::MessageBus;
-use common_obs::{counter, gauge, Counter, Gauge, SpanExt};
+use common_obs::{
+    encode_prometheus_metrics, handler_latency_seconds, http_requests_total, SpanExt,
+    PROMETHEUS_CONTENT_TYPE,
+};
 use device_registry::DeviceRegistryClient;
 use error::ApiError;
-use once_cell::sync::Lazy;
 use rate_limit::RateLimiter;
 use rbac::{PolicyError, RbacPolicy, Role};
 use serde_json::json;
@@ -34,11 +36,6 @@ pub const SERVICE_NAME: &str = "api-gateway";
 pub const ROLE_HEADER: &str = "x-lokan-role";
 pub const SUBJECT_HEADER: &str = "x-lokan-subject";
 const REQUEST_ID_HEADER: &str = "x-request-id";
-
-static START_TIME: Lazy<Instant> = Lazy::new(Instant::now);
-static REQUESTS_TOTAL: Lazy<Arc<dyn Counter>> = Lazy::new(|| counter("api_gateway_requests_total"));
-static REQUESTS_INFLIGHT: Lazy<Arc<dyn Gauge>> =
-    Lazy::new(|| gauge("api_gateway_requests_inflight"));
 
 #[derive(Clone)]
 pub struct AppState {
@@ -172,8 +169,11 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
             id
         });
 
-    REQUESTS_TOTAL.increment(1);
-    let _inflight = InFlightGuard::new();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
 
     let span = info_span!(
         "http.request",
@@ -199,7 +199,7 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
     };
 
     let status = response.status();
-    let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let latency = start.elapsed().as_secs_f64();
     {
         let _guard = span.enter();
         tracing::info!(
@@ -207,11 +207,15 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
             method = %method,
             path = %path,
             status = status.as_u16(),
-            latency_ms,
+            latency_ms = latency * 1000.0,
             remote_addr = remote_addr.as_str(),
             user_agent = user_agent.as_str()
         );
     }
+
+    let status_label = status.as_u16().to_string();
+    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status_label.as_str()], 1);
+    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
 
     response.headers_mut().insert(
         REQUEST_ID_HEADER,
@@ -222,31 +226,13 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
 }
 
 async fn metrics() -> impl IntoResponse {
-    let uptime = START_TIME.elapsed().as_secs_f64();
-    let body = format!(
-        concat!(
-            "# HELP process_uptime_seconds Service uptime in seconds\n",
-            "# TYPE process_uptime_seconds gauge\n",
-            "process_uptime_seconds {uptime:.3}\n",
-            "# HELP api_gateway_requests_total Total HTTP requests handled\n",
-            "# TYPE api_gateway_requests_total counter\n",
-            "api_gateway_requests_total {total}\n",
-            "# HELP api_gateway_requests_inflight Current in-flight HTTP requests\n",
-            "# TYPE api_gateway_requests_inflight gauge\n",
-            "api_gateway_requests_inflight {inflight}\n"
-        ),
-        uptime = uptime,
-        total = REQUESTS_TOTAL.value(),
-        inflight = REQUESTS_INFLIGHT.value()
-    );
-
     (
         StatusCode::OK,
         [(
             header::CONTENT_TYPE,
-            HeaderValue::from_static("text/plain; version=0.0.4"),
+            HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
         )],
-        body,
+        encode_prometheus_metrics(),
     )
 }
 
@@ -306,19 +292,4 @@ pub fn extract_subject(headers: &HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "anonymous".to_string())
-}
-
-struct InFlightGuard;
-
-impl InFlightGuard {
-    fn new() -> Self {
-        REQUESTS_INFLIGHT.increment(1);
-        Self
-    }
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        REQUESTS_INFLIGHT.increment(-1);
-    }
 }

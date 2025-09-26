@@ -533,7 +533,9 @@ dependencies = [
 name = "common-obs"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "once_cell",
+ "serde_json",
  "thiserror",
  "tracing",
  "tracing-subscriber",

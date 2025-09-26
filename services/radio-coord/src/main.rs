@@ -1,17 +1,25 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{MatchedPath, State};
+use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::middleware::{from_fn, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use common_config::{load, MsgBusConfig, ServiceConfig};
 use common_mdns::announce;
 use common_msgbus::{MessageBus, NatsBus, NatsConfig};
-use common_obs::ObsInit;
+use common_obs::{
+    encode_prometheus_metrics, handler_latency_seconds, http_requests_total, msgbus_publish_total,
+    ObsInit, PROMETHEUS_CONTENT_TYPE,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
+
+use std::time::Instant;
 
 const SERVICE_NAME: &str = "radio-coord";
 type SharedState = Arc<AppState>;
@@ -63,7 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/thread/channel", post(update_thread_channel))
         .route("/v1/wifi/config", post(apply_wifi_config))
         .route("/v1/wifi/channel", post(update_wifi_channel))
-        .with_state(state.clone());
+        .route("/metrics", get(metrics))
+        .with_state(state.clone())
+        .layer(from_fn(track_http_metrics));
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -73,6 +83,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "service": SERVICE_NAME }))
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
+        )],
+        encode_prometheus_metrics(),
+    )
+}
+
+async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
+
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let latency = start.elapsed().as_secs_f64();
+    let status = response.status().as_u16().to_string();
+
+    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status.as_str()], 1);
+    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
+
+    response
 }
 
 #[derive(Clone)]
@@ -443,6 +483,7 @@ async fn publish_event(
     payload: &serde_json::Value,
 ) -> Result<(), ApiError> {
     let bytes = serde_json::to_vec(payload).map_err(|err| ApiError::Bus(err.to_string()))?;
+    msgbus_publish_total().inc(&[SERVICE_NAME, subject], 1);
     state
         .bus
         .publish(subject, &bytes)

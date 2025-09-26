@@ -82,5 +82,5 @@ async fn metrics_endpoint_returns_uptime() {
 
     let body_bytes = body.collect().await.unwrap().to_bytes();
     let body_text = String::from_utf8(body_bytes.to_vec()).expect("utf8");
-    assert!(body_text.contains("process_uptime_seconds"));
+    assert!(body_text.contains("http_requests_total"));
 }

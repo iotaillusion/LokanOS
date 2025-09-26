@@ -1,7 +1,9 @@
-use axum::extract::{ws::Message, Path, State, WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{ws::Message, MatchedPath, Path, State, WebSocketUpgrade};
+use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::middleware::{from_fn, Next};
 use axum::response::sse::{Event, KeepAlive};
-use axum::response::{IntoResponse, Sse};
+use axum::response::{IntoResponse, Response, Sse};
 use axum::routing::{get, put};
 use axum::{Json, Router};
 use futures_core::Stream;
@@ -16,7 +18,12 @@ use uuid::Uuid;
 use sqlx::Row;
 
 use common_config::service_port;
-use common_obs::{health_router, ObsInit};
+use common_obs::{
+    encode_prometheus_metrics, handler_latency_seconds, health_router, http_requests_total,
+    ObsInit, PROMETHEUS_CONTENT_TYPE,
+};
+
+use std::time::Instant;
 
 #[cfg(all(feature = "sqlite", feature = "postgres"))]
 compile_error!("enable only one backend feature at a time");
@@ -178,8 +185,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/v1/events/sse", get(events_sse))
         .route("/v1/events/ws", get(events_ws))
+        .route("/metrics", get(metrics))
         .with_state(state)
-        .merge(health_router(SERVICE_NAME));
+        .merge(health_router(SERVICE_NAME))
+        .layer(from_fn(track_http_metrics));
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -221,6 +230,36 @@ async fn init_schema(pool: &DbPool) -> Result<(), sqlx::Error> {
     sqlx::query(create_devices).execute(pool).await?;
     sqlx::query(create_capabilities).execute(pool).await?;
     Ok(())
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
+        )],
+        encode_prometheus_metrics(),
+    )
+}
+
+async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
+
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let latency = start.elapsed().as_secs_f64();
+    let status = response.status().as_u16().to_string();
+
+    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status.as_str()], 1);
+    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
+
+    response
 }
 
 async fn list_rooms(State(state): State<AppState>) -> Result<Json<Vec<Room>>, RegistryError> {
