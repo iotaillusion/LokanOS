@@ -45,7 +45,6 @@ if [[ -n "${ALT_NAMES}" ]]; then
       echo "DNS.${IDX} = ${entry}"
       IDX=$((IDX+1))
     done
-    echo "extendedKeyUsage = serverAuth"
   } > "${TMP_CFG}"
   SAN_CONFIG="-extfile ${TMP_CFG}"
 fi

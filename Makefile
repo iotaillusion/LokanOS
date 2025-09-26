@@ -1,4 +1,4 @@
-.PHONY: help fmt lint test build e2e package sbom oas sdks
+.PHONY: help fmt lint test build e2e package sbom oas sdks sdk-c
 
 BUILD_SHA ?= $(shell git rev-parse --short HEAD)
 BUILD_TIME ?= $(shell date -u -Iseconds | sed 's/+00:00/Z/')
@@ -6,7 +6,7 @@ BUILD_TIME ?= $(shell date -u -Iseconds | sed 's/+00:00/Z/')
 CARGO_ENV = BUILD_SHA=$(BUILD_SHA) BUILD_TIME=$(BUILD_TIME)
 
 help:
-        @echo "Available targets: fmt lint test build e2e package sbom oas sdks"
+	@echo "Available targets: fmt lint test build e2e package sbom oas sdks sdk-c"
 
 fmt:
 	$(CARGO_ENV) cargo fmt --all
@@ -34,3 +34,8 @@ oas:
 
 sdks: oas
 	node tools/oas2ts.ts
+
+sdk-c:
+	cmake -S sdks/c -B sdks/c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$(CURDIR)/sdks/c/dist
+	cmake --build sdks/c/build --config Release
+	cmake --install sdks/c/build --config Release
