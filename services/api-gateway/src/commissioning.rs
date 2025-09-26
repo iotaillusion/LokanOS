@@ -5,6 +5,7 @@ use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use common_ble::{CsrRequest, CsrResponse, VerifyRequest, VerifyResponse};
+use common_obs::msgbus_publish_total;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -195,6 +196,7 @@ async fn publish_event(state: &AppState, subject: &str, payload: &serde_json::Va
         return;
     };
 
+    msgbus_publish_total().inc(&[crate::SERVICE_NAME, subject], 1);
     if let Err(error) = state.bus.publish(subject, &bytes).await {
         warn!(%error, subject, "failed to publish commissioning event");
     }

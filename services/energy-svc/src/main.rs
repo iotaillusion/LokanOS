@@ -2,7 +2,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::body::Body;
+use axum::extract::{MatchedPath, Query, State};
+use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::middleware::{from_fn, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Local, NaiveTime, Utc};
@@ -11,7 +15,12 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use common_config::service_port;
-use common_obs::{health_router, ObsInit};
+use common_obs::{
+    encode_prometheus_metrics, handler_latency_seconds, health_router, http_requests_total,
+    ObsInit, PROMETHEUS_CONTENT_TYPE,
+};
+
+use std::time::Instant;
 
 const SERVICE_NAME: &str = "energy-svc";
 const PORT_ENV: &str = "ENERGY_SVC_PORT";
@@ -107,8 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/budgets", post(set_budgets))
         .route("/v1/tou", post(set_tou_windows))
         .route("/v1/advice", get(get_advice))
+        .route("/metrics", get(metrics))
         .with_state(state)
-        .merge(health_router(SERVICE_NAME));
+        .merge(health_router(SERVICE_NAME))
+        .layer(from_fn(track_http_metrics));
 
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
@@ -198,6 +209,36 @@ fn in_window(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
 
 fn default_multiplier() -> f32 {
     1.0
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
+        )],
+        encode_prometheus_metrics(),
+    )
+}
+
+async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
+
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let latency = start.elapsed().as_secs_f64();
+    let status = response.status().as_u16().to_string();
+
+    http_requests_total().inc(&[SERVICE_NAME, route.as_str(), status.as_str()], 1);
+    handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
+
+    response
 }
 
 #[derive(Debug, Serialize)]
