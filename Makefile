@@ -34,7 +34,7 @@ build:
 	fi
 
 e2e:
-	@echo "e2e tests are not implemented yet"
+	@tests/e2e/updater_scenario.sh
 
 package: sbom attest
 	OTA_SBOM_PATH=$(CURDIR)/dist/lokanos.sbom.json os/images/build.sh
