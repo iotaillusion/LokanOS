@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 
+use crate::bundle::BundleVerifier;
 use crate::health::{HealthCheckError, HealthClient};
 use crate::state::{CommitError, RollbackError, Slot, StageError, UpdaterState};
 use crate::store::{StateStore, StateStoreError};
@@ -31,6 +32,7 @@ pub struct UpdaterCore {
     health_endpoints: Arc<Vec<String>>,
     health_deadline: Duration,
     health_quorum: usize,
+    bundle_verifier: Arc<dyn BundleVerifier>,
 }
 
 impl UpdaterCore {
@@ -40,6 +42,7 @@ impl UpdaterCore {
         health_endpoints: Vec<String>,
         health_deadline: Duration,
         health_quorum: usize,
+        bundle_verifier: Arc<dyn BundleVerifier>,
     ) -> Result<Self, UpdaterError> {
         let state = match store.load().await? {
             Some(state) => state,
@@ -53,6 +56,7 @@ impl UpdaterCore {
             health_endpoints: Arc::new(health_endpoints),
             health_deadline,
             health_quorum,
+            bundle_verifier,
         })
     }
 
@@ -61,8 +65,14 @@ impl UpdaterCore {
     }
 
     pub async fn stage(&self, artifact: String) -> Result<Slot, UpdaterError> {
+        let metadata = self
+            .bundle_verifier
+            .verify(&artifact)
+            .await
+            .map_err(|err| StageError::InvalidBundle(err.to_string()))?;
+
         let mut state = self.state.lock().await;
-        let slot = state.stage(artifact)?;
+        let slot = state.stage(artifact, Some(metadata.target_slot()))?;
         self.store.save(&state).await?;
         Ok(slot)
     }
