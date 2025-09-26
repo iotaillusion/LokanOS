@@ -1,4 +1,4 @@
-.PHONY: help fmt lint test build e2e package sbom oas sdks sdk-c
+.PHONY: help fmt lint test build e2e package sbom attest oas sdks sdk-c
 
 BUILD_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -7,7 +7,7 @@ CARGO_ENV = BUILD_SHA=$(BUILD_SHA) BUILD_TIME=$(BUILD_TIME)
 FAST ?= 0
 
 help:
-	@echo "Available targets: fmt lint test build e2e package sbom oas sdks sdk-c"
+	@echo "Available targets: fmt lint test build e2e package sbom attest oas sdks sdk-c"
 
 fmt:
 	$(CARGO_ENV) cargo fmt --all
@@ -36,11 +36,14 @@ build:
 e2e:
 	@echo "e2e tests are not implemented yet"
 
-package:
-	os/images/build.sh
+package: sbom attest
+	OTA_SBOM_PATH=$(CURDIR)/dist/lokanos.sbom.json os/images/build.sh
 
 sbom:
-	@echo "SBOM generation is not implemented yet"
+	tools/sbom.sh
+
+attest:
+	tools/attest.sh
 
 oas:
 	@if [ "$(FAST)" = "1" ]; then \
