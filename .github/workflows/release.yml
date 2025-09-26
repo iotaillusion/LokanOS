@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: linux-amd64
+          - runner: ubuntu-22.04-arm64
+            arch: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-workspace
+
+      - name: Cargo build (release)
+        run: cargo build --workspace --all-targets --release
+
+      - name: Cargo test
+        run: cargo test --workspace --all-targets
+
+  e2e:
+    name: End-to-End Tests
+    needs: build-test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Restore Docker layer cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/docker
+            /tmp/.buildx-cache
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile', '**/docker-compose.yml', '**/docker-compose.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
+      - name: Start minimal stack
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          BUILDKIT_PROGRESS: plain
+        run: |
+          mkdir -p ~/.cache/docker /tmp/.buildx-cache
+          docker compose -f docker/dev/docker-compose.yml up --build -d
+
+      - name: Run end-to-end suite
+        run: make e2e
+
+      - name: Tear down minimal stack
+        if: always()
+        run: docker compose -f docker/dev/docker-compose.yml down --volumes --remove-orphans
+
+  compliance:
+    name: Supply Chain Compliance
+    needs: build-test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate SBOM
+        run: make sbom
+
+      - name: Generate attestation
+        run: make attest
+
+  package:
+    name: Package OTA Artifacts
+    needs:
+      - build-test
+      - e2e
+      - compliance
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-workspace
+
+      - name: Build OTA package
+        run: make package
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lokanos-${{ github.ref_name }}
+          if-no-files-found: error
+          path: |
+            dist/ota/**/*.tar
+            dist/lokanos.sbom.json
+            dist/lokanos.att.json
