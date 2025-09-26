@@ -1,105 +1,168 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-UPDATER_PORT=${UPDATER_E2E_PORT:-18086}
-HEALTH_PORT=${UPDATER_E2E_HEALTH_PORT:-18087}
-ROLLBACK_THRESHOLD=${UPDATER_E2E_ROLLBACK_THRESHOLD:-2}
-STATE_FILE=$(mktemp)
-UPDATER_LOG="$REPO_ROOT/target/e2e-updater.log"
-HEALTH_PID=""
-UPDATER_PID=""
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+: "${CARGO_TARGET_DIR:=$ROOT/target}"
+LOG_DIR="${CARGO_TARGET_DIR}/e2e-logs"
+mkdir -p "${LOG_DIR}"
 
-cleanup() {
-  local code=$?
-  if [[ -n "$UPDATER_PID" ]] && kill -0 "$UPDATER_PID" 2>/dev/null; then
-    kill "$UPDATER_PID" 2>/dev/null || true
-    wait "$UPDATER_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$HEALTH_PID" ]] && kill -0 "$HEALTH_PID" 2>/dev/null; then
-    kill "$HEALTH_PID" 2>/dev/null || true
-    wait "$HEALTH_PID" 2>/dev/null || true
-  fi
-  if [[ $code -ne 0 ]] && [[ -f "$UPDATER_LOG" ]]; then
-    echo "--- updater log tail ---" >&2
-    tail -n 200 "$UPDATER_LOG" >&2 || true
-  fi
-  rm -f "$STATE_FILE"
-  exit $code
-}
-trap 'cleanup' EXIT
+UPDATER_PORT="${UPDATER_PORT:-${UPDATER_E2E_PORT:-18086}}"
+STUB_HEALTH_PORT="${STUB_HEALTH_PORT:-${UPDATER_E2E_HEALTH_PORT:-18087}}"
+RUST_LOG="${RUST_LOG:-info}"
+ROLLBACK_THRESHOLD="${ROLLBACK_THRESHOLD:-${UPDATER_E2E_ROLLBACK_THRESHOLD:-2}}"
+
+UPDATER_BIN_DEBUG="${CARGO_TARGET_DIR}/debug/updater"
+UPDATER_BIN_RELEASE="${CARGO_TARGET_DIR}/release/updater"
+UPDATER_BIN="${UPDATER_BIN:-}"
+
+UPDATER_LOG="${LOG_DIR}/updater.log"
+STUB_LOG="${LOG_DIR}/stub-health.log"
+STATE_FILE="$(mktemp "${LOG_DIR}/stub-health-state.XXXXXX")"
+STUB_HEALTH_SCRIPT="${LOG_DIR}/stub_health.py"
 
 log() {
   printf '[updater-e2e] %s\n' "$*"
 }
 
+echo "[updater-e2e] using target dir: ${CARGO_TARGET_DIR}"
+echo "[updater-e2e] logs: ${LOG_DIR}"
+
+cleanup() {
+  local code=$?
+  log "cleaning up"
+  if [[ -n "${UPDATER_PID:-}" ]] && kill -0 "${UPDATER_PID}" 2>/dev/null; then
+    kill "${UPDATER_PID}" 2>/dev/null || true
+    wait "${UPDATER_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${HEALTH_PID:-}" ]] && kill -0 "${HEALTH_PID}" 2>/dev/null; then
+    kill "${HEALTH_PID}" 2>/dev/null || true
+    wait "${HEALTH_PID}" 2>/dev/null || true
+  fi
+  rm -f "${STATE_FILE}" "${STUB_HEALTH_SCRIPT}"
+  if [[ $code -ne 0 ]]; then
+    echo "--- tail updater.log ---" >&2
+    tail -n 200 "${UPDATER_LOG}" >&2 || true
+    echo "--- head stub-health.log ---" >&2
+    head -n 50 "${STUB_LOG}" >&2 || true
+  fi
+  exit $code
+}
+trap 'cleanup' EXIT
+
+# Ensure updater binary exists (prefer release if present)
+if [[ -z "${UPDATER_BIN}" ]]; then
+  if [[ -x "${UPDATER_BIN_RELEASE}" ]]; then
+    UPDATER_BIN="${UPDATER_BIN_RELEASE}"
+  else
+    log "building updater (debug)…"
+    (cd "${ROOT}" && cargo build -q -p updater --bin updater)
+    UPDATER_BIN="${UPDATER_BIN_DEBUG}"
+  fi
+fi
+
 set_health_state() {
-  printf '%s' "$1" >"$STATE_FILE"
+  printf '%s' "$1" > "${STATE_FILE}"
 }
 
 start_health_server() {
-  log "starting stub health endpoint on port $HEALTH_PORT"
+  log "starting stub health endpoint on port ${STUB_HEALTH_PORT}"
   set_health_state ok
-  python3 - "$HEALTH_PORT" "$STATE_FILE" <<'PY' &
+  if command -v python3 >/dev/null 2>&1; then
+    cat > "${STUB_HEALTH_SCRIPT}" <<'PY'
 import http.server
 import json
-import pathlib
+import os
 import socketserver
-import sys
+from pathlib import Path
 
-port = int(sys.argv[1])
-state_path = pathlib.Path(sys.argv[2])
+port = int(os.environ.get("STUB_HEALTH_PORT", "18087"))
+state_path = Path(os.environ["STATE_FILE"])
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        state = 'ok'
+        state = "ok"
         if state_path.exists():
             try:
-                state = state_path.read_text(encoding='utf-8').strip() or 'ok'
+                state = state_path.read_text(encoding="utf-8").strip() or "ok"
             except OSError:
-                state = 'ok'
-        if state.lower() == 'ok':
-            body = json.dumps({'status': 'ok'}).encode('utf-8')
-        else:
-            body = json.dumps({'status': 'fail'}).encode('utf-8')
-        code = 200
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
+                state = "ok"
+        payload = json.dumps({"status": state}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, format, *args):
+        self.wfile.write(payload)
+
+    def log_message(self, *_):
         return
 
-with socketserver.ThreadingTCPServer(('127.0.0.1', port), Handler) as httpd:
+with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
     httpd.serve_forever()
 PY
-  HEALTH_PID=$!
+    STUB_HEALTH_PORT="${STUB_HEALTH_PORT}" STATE_FILE="${STATE_FILE}" nohup python3 "${STUB_HEALTH_SCRIPT}" > "${STUB_LOG}" 2>&1 &
+    HEALTH_PID=$!
+  else
+    nohup bash -c '
+      STATE_FILE="$1"
+      PORT="$2"
+      while true; do
+        if [[ -f "$STATE_FILE" ]]; then
+          STATE=$(<"$STATE_FILE")
+        else
+          STATE="ok"
+        fi
+        if [[ "$STATE" == "fail" ]]; then
+          BODY="{\"status\":\"fail\"}"
+        else
+          BODY="{\"status\":\"ok\"}"
+        fi
+        printf "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %s\r\n\r\n%s" "${#BODY}" "$BODY" | nc -l -s 127.0.0.1 -p "$PORT" -q 1
+      done
+    ' bash "${STATE_FILE}" "${STUB_HEALTH_PORT}" > "${STUB_LOG}" 2>&1 &
+    HEALTH_PID=$!
+  fi
 }
 
 start_updater() {
-  log "starting updater service on port $UPDATER_PORT"
-  rm -rf "$REPO_ROOT/data/updater"
-  (cd "$REPO_ROOT" && \
-    UPDATER_PORT="$UPDATER_PORT" \
-    UPDATER_HEALTH_ENDPOINTS="http://127.0.0.1:$HEALTH_PORT/health" \
-    UPDATER_HEALTH_DEADLINE_SECS=3 \
-    UPDATER_HEALTH_QUORUM=1 \
-    RUST_LOG=info \
-    cargo run --bin updater >"$UPDATER_LOG" 2>&1) &
-  UPDATER_PID=$!
+  log "starting updater service on port ${UPDATER_PORT}"
+  rm -rf "${ROOT}/data/updater"
+  : > "${UPDATER_LOG}"
+  (
+    cd "${ROOT}"
+    nohup env \
+      RUST_LOG="${RUST_LOG}" \
+      UPDATER_PORT="${UPDATER_PORT}" \
+      UPDATER_HEALTH_ENDPOINTS="http://127.0.0.1:${STUB_HEALTH_PORT}/health" \
+      UPDATER_HEALTH_DEADLINE_SECS=3 \
+      UPDATER_HEALTH_QUORUM=1 \
+      "${UPDATER_BIN}" --port "${UPDATER_PORT}" > "${UPDATER_LOG}" 2>&1 &
+    echo $! > "${LOG_DIR}/updater.pid"
+  )
+  UPDATER_PID=$(<"${LOG_DIR}/updater.pid")
+  rm -f "${LOG_DIR}/updater.pid"
 }
 
 wait_for_service() {
-  for _ in $(seq 1 60); do
-    if curl --silent --fail "http://127.0.0.1:$UPDATER_PORT/health" >/dev/null; then
-      return
-    fi
-    sleep 1
+  local health_ok=0
+  for url in "http://127.0.0.1:${UPDATER_PORT}/v1/health" "http://127.0.0.1:${UPDATER_PORT}/health"; do
+    for _ in $(seq 1 90); do
+      if curl -fsS "$url" >/dev/null; then
+        log "health OK at $url"
+        health_ok=1
+        break 2
+      fi
+      sleep 1
+    done
   done
-  echo "updater service did not become healthy" >&2
-  exit 1
+
+  if [[ "$health_ok" != "1" ]]; then
+    echo "::error::updater service did not become healthy"
+    echo "--- tail updater.log ---"
+    tail -n 200 "${UPDATER_LOG}" || true
+    echo "--- head stub-health.log ---"
+    head -n 50 "${STUB_LOG}" || true
+    exit 2
+  fi
 }
 
 run_post() {
@@ -283,18 +346,18 @@ main() {
   wait_for_service
 
   local happy_version="e2e-happy-$(date +%s)"
-  local happy_bundle="$REPO_ROOT/dist/ota/lokan-$happy_version"
+  local happy_bundle="$ROOT/dist/ota/lokan-$happy_version"
   log "building healthy OTA bundle targeting slot B"
-  OTA_VERSION="$happy_version" OTA_TARGET_SLOT=B "$REPO_ROOT/os/images/build.sh" >/dev/null
+  OTA_VERSION="$happy_version" OTA_TARGET_SLOT=B "$ROOT/os/images/build.sh" >/dev/null
   stage_bundle "$happy_bundle" B
   commit_expect_success B
   verify_status_success
 
   sleep 1
   local bad_version="e2e-bad-$(date +%s)"
-  local bad_bundle="$REPO_ROOT/dist/ota/lokan-$bad_version"
+  local bad_bundle="$ROOT/dist/ota/lokan-$bad_version"
   log "building faulty OTA bundle targeting slot A"
-  OTA_VERSION="$bad_version" OTA_TARGET_SLOT=A "$REPO_ROOT/os/images/build.sh" >/dev/null
+  OTA_VERSION="$bad_version" OTA_TARGET_SLOT=A "$ROOT/os/images/build.sh" >/dev/null
   stage_bundle "$bad_bundle" A
 
   set_health_state fail
