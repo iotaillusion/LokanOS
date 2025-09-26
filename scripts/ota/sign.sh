@@ -23,7 +23,7 @@ if [[ ! -d "$SIG_DIR" ]]; then
   mkdir -p "$SIG_DIR"
 fi
 
-python3 <<'PY' "$BUNDLE_DIR" "$MANIFEST_PATH" "$CHECKSUM_PATH"
+python3 - "$BUNDLE_DIR" "$MANIFEST_PATH" "$CHECKSUM_PATH" <<'PY'
 import json
 import hashlib
 import pathlib
@@ -69,7 +69,7 @@ PY
 TMP_SIG=$(mktemp)
 trap 'rm -f "$TMP_SIG"' EXIT
 
-openssl pkeyutl -sign -inkey "$PRIVATE_KEY" -in "$CHECKSUM_PATH" -out "$TMP_SIG"
+openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$CHECKSUM_PATH" -out "$TMP_SIG"
 
 {
   echo "-----BEGIN ED25519 SIGNATURE-----"

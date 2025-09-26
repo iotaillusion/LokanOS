@@ -27,7 +27,7 @@ if [[ ! -f "$SIGNATURE_PATH" ]]; then
   exit 1
 fi
 
-python3 <<'PY' "$BUNDLE_DIR" "$MANIFEST_PATH" "$CHECKSUM_PATH"
+python3 - "$BUNDLE_DIR" "$MANIFEST_PATH" "$CHECKSUM_PATH" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -98,4 +98,4 @@ trap 'rm -f "$TMP_SIG"' EXIT
 
 awk '/-----BEGIN/{flag=1;next}/-----END/{flag=0}flag' "$SIGNATURE_PATH" | base64 -d > "$TMP_SIG"
 
-openssl pkeyutl -verify -pubin -inkey "$PUBLIC_KEY" -sigfile "$TMP_SIG" -in "$CHECKSUM_PATH"
+openssl pkeyutl -verify -rawin -pubin -inkey "$PUBLIC_KEY" -sigfile "$TMP_SIG" -in "$CHECKSUM_PATH"
