@@ -3,21 +3,18 @@ x-rust-env: &rust-env
   RUST_BACKTRACE: "1"
   RUST_LOG: info
 
-x-workspace-volume: &workspace-volume
-  - ..:/workspace
-
 x-rust-service: &rust-service
-  image: rust:1.73-bullseye
+  image: rust:1.80-bullseye
   working_dir: /workspace
   environment:
     <<: *rust-env
-  volumes: *workspace-volume
+  volumes:
+    - ..:/workspace
   tty: true
 
 services:
   nats:
     image: nats:2.10.12-alpine
-    profiles: ["core", "full"]
     command:
       - -js
       - --http_port
@@ -33,7 +30,7 @@ services:
 
   postgres:
     image: postgres:15-alpine
-    profiles: ["full"]
+    profiles: ["postgres"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -54,10 +51,14 @@ services:
       dockerfile: services/device-registry/Dockerfile
     image: lokan/device-registry:dev
     pull_policy: build
-    profiles: ["full"]
     environment:
       RUST_LOG: info
-      DEVICE_REGISTRY_DATABASE_URL: "${DEVICE_REGISTRY_DATABASE_URL:-sqlite:///var/lib/device-registry/dev.db}"
+      DEVICE_REGISTRY_BACKEND: auto
+      DEVICE_REGISTRY_POSTGRES_HOST: postgres
+      DEVICE_REGISTRY_POSTGRES_PORT: "5432"
+      DEVICE_REGISTRY_POSTGRES_USER: postgres
+      DEVICE_REGISTRY_POSTGRES_PASSWORD: postgres
+      DEVICE_REGISTRY_POSTGRES_DB: device_registry
     volumes:
       - device-registry-data:/var/lib/device-registry
     ports:
@@ -73,14 +74,10 @@ services:
 
   api-gateway:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl openssl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         if [ ! -f security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem ]; then
           pushd security/pki/dev > /dev/null;
           ./generate_ca.sh;
@@ -102,7 +99,6 @@ services:
       API_GATEWAY_TLS__CERT_PATH: security/pki/dev/out/services/api-gateway/api-gateway.cert.pem
       API_GATEWAY_TLS__KEY_PATH: security/pki/dev/out/services/api-gateway/api-gateway.key.pem
       API_GATEWAY_TLS__CLIENT_CA_PATH: security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem
-    volumes: *workspace-volume
     ports:
       - "8443:8443"
     depends_on:
@@ -127,17 +123,12 @@ services:
 
   rule-engine:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         exec cargo run -p rule-engine;
       "
-    volumes: *workspace-volume
     ports:
       - "8002:8002"
     healthcheck:
@@ -148,21 +139,16 @@ services:
 
   scene-svc:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         scripts/dev/wait-for.sh device-registry:8001 60;
         exec cargo run -p scene-svc;
       "
     environment:
       <<: *rust-env
       DEVICE_REGISTRY_URL: http://device-registry:8001
-    volumes: *workspace-volume
     ports:
       - "8003:8003"
     depends_on:
@@ -176,17 +162,12 @@ services:
 
   presence-svc:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         exec cargo run -p presence-svc;
       "
-    volumes: *workspace-volume
     ports:
       - "8004:8004"
     healthcheck:
@@ -197,17 +178,12 @@ services:
 
   energy-svc:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         exec cargo run -p energy-svc;
       "
-    volumes: *workspace-volume
     ports:
       - "8005:8005"
     healthcheck:
@@ -218,19 +194,13 @@ services:
 
   updater:
     <<: *rust-service
-    profiles: ["core", "full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         scripts/dev/wait-for.sh nats:4222 60;
         exec cargo run -p updater;
       "
-    environment:
-      <<: *rust-env
     volumes:
       - ..:/workspace
       - updater-data:/workspace/data/updater
@@ -247,17 +217,12 @@ services:
 
   telemetry-pipe:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         exec cargo run -p telemetry-pipe;
       "
-    volumes: *workspace-volume
     ports:
       - "8007:8007"
     healthcheck:
@@ -268,14 +233,10 @@ services:
 
   audit-log:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         mkdir -p data/audit-log;
         exec cargo run -p audit-log;
       "
@@ -295,14 +256,10 @@ services:
 
   radio-coord:
     <<: *rust-service
-    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/bootstrap-rust-container.sh;
         scripts/dev/wait-for.sh nats:4222 60;
         exec cargo run -p radio-coord;
       "
@@ -310,7 +267,6 @@ services:
       <<: *rust-env
       RADIO_COORD_ANNOUNCE_MDNS: "false"
       RADIO_COORD_BUS__URL: nats://nats:4222
-    volumes: *workspace-volume
     ports:
       - "8009:8009"
     depends_on:

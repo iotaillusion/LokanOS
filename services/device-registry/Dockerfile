@@ -27,17 +27,23 @@ RUN cargo fetch --locked
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release -p device-registry --target x86_64-unknown-linux-musl
+    cargo build --release -p device-registry --target x86_64-unknown-linux-musl --no-default-features --features sqlite \
+    && cp target/x86_64-unknown-linux-musl/release/device-registry target/x86_64-unknown-linux-musl/release/device-registry-sqlite \
+    && cargo build --release -p device-registry --target x86_64-unknown-linux-musl --no-default-features --features postgres \
+    && cp target/x86_64-unknown-linux-musl/release/device-registry target/x86_64-unknown-linux-musl/release/device-registry-postgres
 
 RUN mkdir -p /tmp/device-registry-data \
     && chown 65532:65532 /tmp/device-registry-data
 
 FROM gcr.io/distroless/static-debian11
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/device-registry /usr/local/bin/device-registry
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/device-registry-sqlite /usr/local/bin/device-registry-sqlite
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/device-registry-postgres /usr/local/bin/device-registry-postgres
 COPY --from=builder --chown=65532:65532 /tmp/device-registry-data /var/lib/device-registry
 COPY --from=builder /bin/busybox /bin/busybox
 COPY --from=builder /etc/ssl /etc/ssl
+COPY services/device-registry/docker-entrypoint.sh /usr/local/bin/device-registry-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/device-registry-entrypoint.sh
 USER 65532:65532
 WORKDIR /var/lib/device-registry
 EXPOSE 8001
-ENTRYPOINT ["/usr/local/bin/device-registry"]
+ENTRYPOINT ["/usr/local/bin/device-registry-entrypoint.sh"]

@@ -70,10 +70,13 @@ sdk-c:
         fi
 
 images:
-	docker compose -f docker/compose.dev.yml build
+        docker compose -f docker/compose.dev.yml build
 
-up-core:
-	docker compose -f docker/compose.dev.yml --profile core up -d nats updater
+up-sqlite:
+        docker compose -f docker/compose.dev.yml up -d nats device-registry updater
+
+up-postgres:
+        docker compose -f docker/compose.dev.yml --profile postgres up -d nats postgres device-registry updater
 
 down:
-	docker compose -f docker/compose.dev.yml down -v
+        docker compose -f docker/compose.dev.yml down -v
