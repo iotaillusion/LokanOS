@@ -6,7 +6,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use axum::http::Method;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
@@ -59,6 +59,14 @@ pub enum PolicyError {
 pub struct RbacPolicy {
     rules: Vec<RouteRule>,
     inherit: HashMap<Role, HashSet<Role>>, // maps to roles it inherits from
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteSummary {
+    pub pattern: String,
+    pub methods: Vec<String>,
+    pub allowed_roles: Vec<String>,
+    pub audit_action: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +129,37 @@ impl RbacPolicy {
             }
         }
         visited
+    }
+
+    pub fn summaries(&self) -> Vec<RouteSummary> {
+        let mut summaries: Vec<RouteSummary> = self
+            .rules
+            .iter()
+            .map(|rule| {
+                let mut methods: Vec<String> = rule
+                    .methods
+                    .iter()
+                    .map(|method| method.as_str().to_string())
+                    .collect();
+                methods.sort();
+
+                let mut roles: Vec<String> = rule
+                    .roles
+                    .iter()
+                    .map(|role| role.as_str().to_string())
+                    .collect();
+                roles.sort();
+
+                RouteSummary {
+                    pattern: rule.pattern.0.clone(),
+                    methods,
+                    allowed_roles: roles,
+                    audit_action: rule.audit_action.clone(),
+                }
+            })
+            .collect();
+        summaries.sort_by(|a, b| a.pattern.cmp(&b.pattern));
+        summaries
     }
 }
 

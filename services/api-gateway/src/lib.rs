@@ -6,13 +6,13 @@ pub mod error;
 pub mod rate_limit;
 pub mod rbac;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use audit::{AuditClient, AuditEvent};
 use axum::body::Body;
-use axum::extract::{connect_info::ConnectInfo, Extension, MatchedPath, State};
+use axum::extract::{connect_info::ConnectInfo, Extension, MatchedPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
@@ -28,7 +28,10 @@ use device_registry::DeviceRegistryClient;
 use error::ApiError;
 use rate_limit::RateLimiter;
 use rbac::{PolicyError, RbacPolicy, Role};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::net::{lookup_host, TcpStream};
+use tokio::time::timeout;
 use tracing::info_span;
 use uuid::Uuid;
 
@@ -56,6 +59,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let protected_routes = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/info", get(info))
+        .route("/v1/diag/ping", get(diag_ping))
+        .route("/v1/diag/routes", get(diag_routes))
         .route(
             "/v1/devices",
             get(list_devices).post(devices_not_implemented),
@@ -223,6 +228,142 @@ async fn request_context(mut req: Request<Body>, next: Next) -> Response {
     );
 
     response
+}
+
+#[derive(Debug, Deserialize)]
+struct PingQuery {
+    target: String,
+    #[serde(default)]
+    port: Option<u16>,
+}
+
+#[derive(Debug, Serialize)]
+struct PingResponse {
+    target: String,
+    method: &'static str,
+    success: bool,
+    duration_ms: f64,
+    resolved: Option<Vec<String>>,
+    error: Option<String>,
+}
+
+async fn diag_ping(Query(params): Query<PingQuery>) -> Result<Json<PingResponse>, ApiError> {
+    let target = params.target.trim();
+    if target.is_empty() {
+        return Err(ApiError::Validation {
+            message: "target query parameter is required".to_string(),
+        });
+    }
+
+    let port = params.port;
+    let address = normalize_target(target, port);
+
+    let started = Instant::now();
+    let attempt = timeout(Duration::from_secs(2), tcp_probe(address.clone())).await;
+
+    let (resolved, success, error) = match attempt {
+        Ok(Ok((resolved, true))) => (resolved, true, None),
+        Ok(Ok((resolved, false))) => (
+            resolved,
+            false,
+            Some("unable to establish TCP connection".to_string()),
+        ),
+        Ok(Err(err)) => (Vec::new(), false, Some(err.to_string())),
+        Err(_) => (Vec::new(), false, Some("probe timed out".to_string())),
+    };
+
+    let duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let resolved = if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved.into_iter().map(|addr| addr.to_string()).collect())
+    };
+
+    Ok(Json(PingResponse {
+        target: target.to_string(),
+        method: "tcp",
+        success,
+        duration_ms,
+        resolved,
+        error,
+    }))
+}
+
+fn normalize_target(target: &str, port_override: Option<u16>) -> String {
+    let port = port_override.unwrap_or(80);
+    if let Ok(mut socket) = target.parse::<SocketAddr>() {
+        if let Some(port) = port_override {
+            socket.set_port(port);
+        }
+        socket.to_string()
+    } else if let Ok(ip) = target.parse::<IpAddr>() {
+        SocketAddr::new(ip, port).to_string()
+    } else if let Some((host, port_str)) = target.rsplit_once(':') {
+        if !host.contains(':') && port_str.parse::<u16>().is_ok() {
+            if let Some(port) = port_override {
+                format!("{host}:{port}")
+            } else {
+                target.to_string()
+            }
+        } else {
+            format!("{target}:{port}")
+        }
+    } else {
+        format!("{target}:{port}")
+    }
+}
+
+async fn tcp_probe(address: String) -> std::io::Result<(Vec<SocketAddr>, bool)> {
+    let addrs: Vec<SocketAddr> = lookup_host(address.as_str()).await?.collect();
+    for addr in &addrs {
+        if TcpStream::connect(addr).await.is_ok() {
+            return Ok((addrs, true));
+        }
+    }
+    Ok((addrs, false))
+}
+
+#[derive(Debug, Serialize)]
+struct RoutesResponse {
+    guarded: Vec<GuardedRoute>,
+    public: Vec<PublicRoute>,
+}
+
+#[derive(Debug, Serialize)]
+struct GuardedRoute {
+    pattern: String,
+    methods: Vec<String>,
+    allowed_roles: Vec<String>,
+    audit_action: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicRoute {
+    path: &'static str,
+    methods: &'static [&'static str],
+}
+
+async fn diag_routes(State(state): State<Arc<AppState>>) -> Json<RoutesResponse> {
+    let mut guarded: Vec<GuardedRoute> = state
+        .policy
+        .summaries()
+        .into_iter()
+        .map(|summary| GuardedRoute {
+            pattern: summary.pattern,
+            methods: summary.methods,
+            allowed_roles: summary.allowed_roles,
+            audit_action: summary.audit_action,
+        })
+        .collect();
+
+    guarded.sort_by(|a, b| a.pattern.cmp(&b.pattern));
+
+    let public = vec![PublicRoute {
+        path: "/metrics",
+        methods: &["GET"],
+    }];
+
+    Json(RoutesResponse { guarded, public })
 }
 
 async fn metrics() -> impl IntoResponse {

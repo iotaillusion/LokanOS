@@ -39,3 +39,24 @@ api_gateway_requests_inflight <count>
 
 The uptime value is computed from the process start time, and the counters are
 maintained by the request middleware that wraps every route.
+
+## Diagnostics endpoints
+
+To assist operators during incident response every control-plane service now
+exposes lightweight diagnostic endpoints under the `/v1/diag/*` namespace:
+
+* **API Gateway**
+  * `GET /v1/diag/ping?target=<host>[&port=]` performs a TCP reachability probe
+    and reports timing, resolution details, and errors.
+  * `GET /v1/diag/routes` returns the RBAC policy surface paired with the
+    required roles for each protected route along with public routes.
+* **Rule Engine** – `GET /v1/diag/trace?rule_id=<id>` surfaces the most recent
+  executions (up to 100) for a rule, including decision outcomes and runtime
+  durations.
+* **Radio Coordinator** – `GET /v1/diag/radio-map` snapshots the most recently
+  applied Thread and Wi-Fi channels/configuration without contacting field
+  hardware.
+
+These endpoints are lightweight, require authentication, and integrate with the
+existing observability middleware so access attempts and latencies remain
+visible in logs and metrics.

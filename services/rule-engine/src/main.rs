@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{MatchedPath, Path, State};
+use axum::extract::{MatchedPath, Path, Query, State};
 use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::{from_fn, Next};
 use axum::response::{IntoResponse, Response};
@@ -39,9 +39,46 @@ fn build_time() -> &'static str {
     option_env!("BUILD_TIME").unwrap_or("unknown")
 }
 
+const MAX_TRACE_ENTRIES: usize = 100;
+
 #[derive(Clone)]
 struct AppState {
     rules: Arc<RwLock<HashMap<String, RuleInstance>>>,
+    traces: Arc<RwLock<HashMap<String, VecDeque<RuleTraceEntry>>>>,
+}
+
+impl AppState {
+    fn new() -> Self {
+        Self {
+            rules: Arc::new(RwLock::new(HashMap::new())),
+            traces: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn record_trace(&self, rule_id: &str, entry: RuleTraceEntry) {
+        let mut guard = self.traces.write();
+        let deque = guard.entry(rule_id.to_string()).or_default();
+        if deque.len() == MAX_TRACE_ENTRIES {
+            deque.pop_front();
+        }
+        deque.push_back(entry);
+    }
+
+    fn traces_for(&self, rule_id: &str) -> Option<Vec<RuleTraceEntry>> {
+        self.traces
+            .read()
+            .get(rule_id)
+            .map(|entries| entries.iter().cloned().rev().collect())
+    }
+
+    fn init_trace_slot(&self, rule_id: &str) {
+        let mut guard = self.traces.write();
+        guard.entry(rule_id.to_string()).or_default();
+    }
+
+    fn drop_trace_slot(&self, rule_id: &str) {
+        self.traces.write().remove(rule_id);
+    }
 }
 
 struct RuleInstance {
@@ -132,12 +169,15 @@ enum ActionStatus {
 enum RuleEngineError {
     #[error("rule not found")]
     NotFound,
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 impl axum::response::IntoResponse for RuleEngineError {
     fn into_response(self) -> axum::response::Response {
         let status = match self {
             RuleEngineError::NotFound => StatusCode::NOT_FOUND,
+            RuleEngineError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
         };
         (
             status,
@@ -154,9 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = service_port(PORT_ENV, DEFAULT_PORT);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    let state = AppState {
-        rules: Arc::new(RwLock::new(HashMap::new())),
-    };
+    let state = AppState::new();
     let scheduler_state = state.clone();
     tokio::spawn(async move {
         run_scheduler(scheduler_state).await;
@@ -176,6 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/rules", get(list_rules).post(create_rule))
         .route("/v1/rules/:id", delete(delete_rule))
         .route("/v1/rules:test", post(test_rule))
+        .route("/v1/diag/trace", get(rule_trace))
         .route("/metrics", get(metrics))
         .with_state(state)
         .merge(health_router(SERVICE_NAME))
@@ -204,6 +243,7 @@ async fn create_rule(
     if payload.id.is_empty() {
         payload.id = Uuid::new_v4().to_string();
     }
+    state.init_trace_slot(&payload.id);
     let mut guard = state.rules.write();
     let ticks = guard
         .values()
@@ -226,6 +266,7 @@ async fn delete_rule(
 ) -> Result<StatusCode, RuleEngineError> {
     let mut guard = state.rules.write();
     if guard.remove(&id).is_some() {
+        state.drop_trace_slot(&id);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(RuleEngineError::NotFound)
@@ -244,6 +285,15 @@ async fn test_rule(Json(request): Json<RuleTestRequest>) -> Json<RuleTestRespons
 
 struct EvaluationResult {
     fired: bool,
+    trace: Vec<String>,
+    actions: Vec<ActionExecution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RuleTraceEntry {
+    timestamp: DateTime<Utc>,
+    fired: bool,
+    duration_ms: f64,
     trace: Vec<String>,
     actions: Vec<ActionExecution>,
 }
@@ -404,12 +454,22 @@ async fn run_scheduler(state: AppState) {
                     serde_json::Value::String(now.to_rfc3339()),
                 );
                 context.insert("tick".to_string(), serde_json::Value::Number(tick.into()));
+                let started = Instant::now();
                 let result = evaluate_rule(&instance.definition, &context, now);
+                let duration = started.elapsed().as_secs_f64() * 1_000.0;
+                let trace_entry = RuleTraceEntry {
+                    timestamp: now,
+                    fired: result.fired,
+                    duration_ms: duration,
+                    trace: result.trace.clone(),
+                    actions: result.actions.clone(),
+                };
                 if result.fired {
                     tracing::info!(rule = %instance.definition.id, trace = ?result.trace, "rule fired");
                 } else {
                     tracing::debug!(rule = %instance.definition.id, trace = ?result.trace, "rule skipped");
                 }
+                state.record_trace(&instance.definition.id, trace_entry);
                 instance.schedule.advance();
             }
         }
@@ -477,6 +537,41 @@ async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
     handler_latency_seconds().observe(&[SERVICE_NAME, route.as_str()], latency);
 
     response
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceQuery {
+    rule_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TraceResponse {
+    rule_id: String,
+    executions: Vec<RuleTraceEntry>,
+}
+
+async fn rule_trace(
+    State(state): State<AppState>,
+    Query(params): Query<TraceQuery>,
+) -> Result<Json<TraceResponse>, RuleEngineError> {
+    if params.rule_id.trim().is_empty() {
+        return Err(RuleEngineError::InvalidRequest(
+            "rule_id query parameter is required".to_string(),
+        ));
+    }
+
+    if !state.rules.read().contains_key(params.rule_id.as_str()) {
+        return Err(RuleEngineError::NotFound);
+    }
+
+    let executions = state
+        .traces_for(params.rule_id.as_str())
+        .unwrap_or_default();
+
+    Ok(Json(TraceResponse {
+        rule_id: params.rule_id,
+        executions,
+    }))
 }
 
 #[cfg(test)]
