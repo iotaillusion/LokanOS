@@ -1,4 +1,4 @@
-name: C SDK
+name: Observability and SDKs
 
 on:
   push:
@@ -6,7 +6,34 @@ on:
   pull_request:
 
 jobs:
-  sdk-c:
+  oas:
+    name: Bundle OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate bundled OpenAPI specification
+        run: make oas
+
+  ts-sdk:
+    name: Generate TypeScript SDK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate TypeScript SDK
+        run: make sdks
+
+  c-sdk:
+    name: Build C SDK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -49,3 +76,39 @@ jobs:
       - name: Shutdown mock scene service
         if: always()
         run: docker compose -f docker/dev/docker-compose.yml down -v
+
+  obs-smoke:
+    name: Observability smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Launch updater service
+        run: |
+          cargo run --bin updater &
+          echo $! > updater.pid
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8006/metrics >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "updater service failed to start" >&2
+          exit 1
+
+      - name: Query metrics endpoint
+        run: |
+          curl --fail --silent http://127.0.0.1:8006/metrics | tee metrics.txt
+          grep process_uptime_seconds metrics.txt
+
+      - name: Shutdown updater service
+        if: always()
+        run: |
+          if [ -f updater.pid ]; then
+            kill $(cat updater.pid) || true
+            wait $(cat updater.pid) || true
+          fi
