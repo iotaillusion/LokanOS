@@ -1,4 +1,4 @@
-.PHONY: help fmt lint test build e2e package sbom attest oas sdks sdk-c
+.PHONY: help fmt lint test build e2e package sbom attest oas sdks sdk-c images up-core down
 
 BUILD_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -61,10 +61,19 @@ sdks: oas
 	fi
 
 sdk-c:
-	@if [ "$(FAST)" = "1" ]; then \
-	        echo "FAST=1 skipping $@"; \
-	else \
-	        cmake -S sdks/c -B sdks/c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$(CURDIR)/sdks/c/dist; \
-	        cmake --build sdks/c/build --config Release; \
-	        cmake --install sdks/c/build --config Release; \
-	fi
+        @if [ "$(FAST)" = "1" ]; then \
+                echo "FAST=1 skipping $@"; \
+        else \
+                cmake -S sdks/c -B sdks/c/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$(CURDIR)/sdks/c/dist; \
+                cmake --build sdks/c/build --config Release; \
+                cmake --install sdks/c/build --config Release; \
+        fi
+
+images:
+	docker compose -f docker/compose.dev.yml build
+
+up-core:
+	docker compose -f docker/compose.dev.yml --profile core up -d nats updater
+
+down:
+	docker compose -f docker/compose.dev.yml down -v

@@ -1,5 +1,3 @@
-version: "3.9"
-
 x-rust-env: &rust-env
   LOG_LEVEL: debug
   RUST_BACKTRACE: "1"
@@ -19,6 +17,7 @@ x-rust-service: &rust-service
 services:
   nats:
     image: nats:2.10.12-alpine
+    profiles: ["core", "full"]
     command:
       - -js
       - --http_port
@@ -27,14 +26,14 @@ services:
       - "4222:4222"
       - "8222:8222"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/varz"]
+      test: ["CMD", "nc", "-z", "127.0.0.1", "4222"]
       interval: 5s
-      timeout: 5s
+      timeout: 2s
       retries: 12
 
   postgres:
     image: postgres:15-alpine
-    profiles: ["postgres"]
+    profiles: ["full"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -46,43 +45,35 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d device_registry"]
       interval: 5s
-      timeout: 5s
+      timeout: 2s
       retries: 12
 
   device-registry:
-    <<: *rust-service
-    command: >-
-      bash -lc "
-        set -euo pipefail;
-        export DEBIAN_FRONTEND=noninteractive;
-        apt-get update;
-        apt-get install -y --no-install-recommends ca-certificates curl;
-        rm -rf /var/lib/apt/lists/*;
-        mkdir -p data/device-registry;
-        if getent hosts postgres > /dev/null 2>&1; then
-          scripts/dev/wait-for.sh postgres:5432 60;
-          export DEVICE_REGISTRY_DATABASE_URL=\"${DEVICE_REGISTRY_DATABASE_URL:-postgres://postgres:postgres@postgres/device_registry}\";
-          exec cargo run -p device-registry --no-default-features --features postgres;
-        fi;
-        export DEVICE_REGISTRY_DATABASE_URL=\"${DEVICE_REGISTRY_DATABASE_URL:-sqlite://data/device-registry/dev.db}\";
-        exec cargo run -p device-registry;
-      "
+    build:
+      context: .
+      dockerfile: services/device-registry/Dockerfile
+    image: lokan/device-registry:dev
+    pull_policy: build
+    profiles: ["full"]
     environment:
-      <<: *rust-env
-      DEVICE_REGISTRY_DATABASE_URL: sqlite://data/device-registry/dev.db
+      RUST_LOG: info
+      DEVICE_REGISTRY_DATABASE_URL: "${DEVICE_REGISTRY_DATABASE_URL:-sqlite:///var/lib/device-registry/dev.db}"
     volumes:
-      - ..:/workspace
-      - device-registry-data:/workspace/data/device-registry
+      - device-registry-data:/var/lib/device-registry
     ports:
       - "8001:8001"
+    depends_on:
+      nats:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8001/health"]
+      test: ["CMD", "/bin/busybox", "wget", "-qO-", "http://127.0.0.1:8001/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   api-gateway:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -131,11 +122,12 @@ services:
             --cacert security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem \
             https://127.0.0.1:8443/v1/health
       interval: 10s
-      timeout: 5s
+      timeout: 2s
       retries: 12
 
   rule-engine:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -151,11 +143,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   scene-svc:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -178,11 +171,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8003/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   presence-svc:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -198,11 +192,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8004/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   energy-svc:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -218,11 +213,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8005/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   updater:
     <<: *rust-service
+    profiles: ["core", "full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -230,51 +226,28 @@ services:
         apt-get update;
         apt-get install -y --no-install-recommends ca-certificates curl;
         rm -rf /var/lib/apt/lists/*;
-        scripts/dev/wait-for.sh device-registry:8001 60;
-        scripts/dev/wait-for.sh scene-svc:8003 60;
-        scripts/dev/wait-for.sh rule-engine:8002 60;
-        scripts/dev/wait-for.sh presence-svc:8004 60;
-        scripts/dev/wait-for.sh energy-svc:8005 60;
-        scripts/dev/wait-for.sh telemetry-pipe:8007 60;
-        scripts/dev/wait-for.sh audit-log:8008 60;
-        scripts/dev/wait-for.sh radio-coord:8009 60;
+        scripts/dev/wait-for.sh nats:4222 60;
         exec cargo run -p updater;
       "
     environment:
       <<: *rust-env
-      UPDATER_HEALTH_ENDPOINTS: "http://device-registry:8001/health,http://scene-svc:8003/health,http://rule-engine:8002/health,http://presence-svc:8004/health,http://energy-svc:8005/health,http://telemetry-pipe:8007/health,http://audit-log:8008/health,http://radio-coord:8009/v1/health"
-      UPDATER_HEALTH_DEADLINE_SECS: "60"
-      UPDATER_HEALTH_QUORUM: "5"
     volumes:
       - ..:/workspace
       - updater-data:/workspace/data/updater
     ports:
       - "8006:8006"
     depends_on:
-      device-registry:
-        condition: service_healthy
-      scene-svc:
-        condition: service_healthy
-      rule-engine:
-        condition: service_healthy
-      presence-svc:
-        condition: service_healthy
-      energy-svc:
-        condition: service_healthy
-      telemetry-pipe:
-        condition: service_healthy
-      audit-log:
-        condition: service_healthy
-      radio-coord:
+      nats:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8006/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   telemetry-pipe:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -290,11 +263,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8007/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   audit-log:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -316,11 +290,12 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8008/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
   radio-coord:
     <<: *rust-service
+    profiles: ["full"]
     command: >-
       bash -lc "
         set -euo pipefail;
@@ -344,7 +319,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8009/v1/health"]
       interval: 5s
-      timeout: 3s
+      timeout: 2s
       retries: 12
 
 volumes:
