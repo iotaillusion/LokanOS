@@ -1,0 +1,8 @@
+{
+  "name": "@lokanos/cli-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "node demo.mjs"
+  }
+}

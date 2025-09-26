@@ -1,0 +1,26 @@
+{
+  "name": "@lokanos/sdk",
+  "version": "0.1.0",
+  "description": "Auto-generated TypeScript client for the LokanOS API bundle.",
+  "type": "module",
+  "main": "./client.js",
+  "module": "./client.js",
+  "types": "./client.ts",
+  "exports": {
+    ".": {
+      "import": "./client.js",
+      "types": "./client.ts"
+    },
+    "./client": {
+      "import": "./client.js",
+      "types": "./client.ts"
+    },
+    "./types": {
+      "import": "./types.js",
+      "types": "./types.ts"
+    }
+  },
+  "scripts": {
+    "build": "node ../../tools/oas2ts.ts"
+  }
+}

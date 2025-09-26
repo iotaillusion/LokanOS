@@ -1,12 +1,12 @@
-.PHONY: help fmt lint test build e2e package sbom oas
+.PHONY: help fmt lint test build e2e package sbom oas sdks
 
 BUILD_SHA ?= $(shell git rev-parse --short HEAD)
-BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+BUILD_TIME ?= $(shell date -u -Iseconds | sed 's/+00:00/Z/')
 
 CARGO_ENV = BUILD_SHA=$(BUILD_SHA) BUILD_TIME=$(BUILD_TIME)
 
 help:
-	@echo "Available targets: fmt lint test build e2e package sbom oas"
+        @echo "Available targets: fmt lint test build e2e package sbom oas sdks"
 
 fmt:
 	$(CARGO_ENV) cargo fmt --all
@@ -31,3 +31,6 @@ sbom:
 
 oas:
 	$(CARGO_ENV) cargo run --quiet --manifest-path tools/Cargo.toml --bin oas-bundle
+
+sdks: oas
+	node tools/oas2ts.ts
