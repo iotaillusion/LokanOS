@@ -1,0 +1,739 @@
+openapi: 3.1.0
+info:
+  title: LokanOS API Bundle
+  version: 0.1.0
+tags:
+- name: Diagnostics
+  description: Common diagnostic endpoints across LokanOS services.
+- name: API Gateway
+  description: Administration endpoints for the API gateway routing plane.
+- name: Audit Log
+  description: Endpoints for retrieving compliance audit trails.
+- name: Device Registry
+  description: Device enrollment and metadata management APIs.
+- name: Energy Service
+  description: Energy usage reporting and forecasting APIs.
+- name: Presence Service
+  description: Occupancy and presence sensing APIs.
+- name: Radio Coordinator
+  description: Wireless spectrum coordination APIs.
+- name: Rule Engine
+  description: Automation rule management APIs.
+- name: Scene Service
+  description: Scene orchestration and scheduling APIs.
+- name: Telemetry Pipeline
+  description: Telemetry ingestion and processing APIs.
+- name: Updater Service
+  description: Firmware and software update orchestration APIs.
+paths:
+  /api-gateway/health:
+    get:
+      operationId: ApiGatewayHealth
+      summary: Gateway health check.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /api-gateway/metrics:
+    get:
+      operationId: ApiGatewayMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api-gateway/diag:
+    get:
+      operationId: ApiGatewayDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /api-gateway/routes:
+    get:
+      operationId: ApiGatewayListRoutes
+      summary: Enumerate configured upstream routes.
+      tags:
+      - API Gateway
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Registered routes exposed by the gateway.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items:
+                      type: string
+                required:
+                - routes
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /audit-log/health:
+    get:
+      operationId: AuditLogHealth
+      summary: Audit log service health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /audit-log/metrics:
+    get:
+      operationId: AuditLogMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /audit-log/diag:
+    get:
+      operationId: AuditLogDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /audit-log/entries:
+    get:
+      operationId: AuditLogListEntries
+      summary: Retrieve recent audit log entries.
+      tags:
+      - Audit Log
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Audit log entries ordered from newest to oldest.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - entries
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /device-registry/health:
+    get:
+      operationId: DeviceRegistryHealth
+      summary: Device registry health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /device-registry/metrics:
+    get:
+      operationId: DeviceRegistryMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /device-registry/diag:
+    get:
+      operationId: DeviceRegistryDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /device-registry/devices:
+    get:
+      operationId: DeviceRegistryListDevices
+      summary: List registered devices with metadata.
+      tags:
+      - Device Registry
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Registered devices and attributes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - devices
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /energy-svc/health:
+    get:
+      operationId: EnergyServiceHealth
+      summary: Energy service health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /energy-svc/metrics:
+    get:
+      operationId: EnergyServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /energy-svc/diag:
+    get:
+      operationId: EnergyServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /energy-svc/energy-report:
+    get:
+      operationId: EnergyServiceGetReport
+      summary: Retrieve aggregated energy usage data.
+      tags:
+      - Energy Service
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Aggregated energy usage summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    type: string
+                  consumptionKwh:
+                    type: number
+                    format: float
+                required:
+                - period
+                - consumptionKwh
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /presence-svc/health:
+    get:
+      operationId: PresenceServiceHealth
+      summary: Presence service health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /presence-svc/metrics:
+    get:
+      operationId: PresenceServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /presence-svc/diag:
+    get:
+      operationId: PresenceServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /presence-svc/presence:
+    get:
+      operationId: PresenceServiceGetPresence
+      summary: Retrieve current occupancy state summary.
+      tags:
+      - Presence Service
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Occupancy state per zone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - zones
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /radio-coord/health:
+    get:
+      operationId: RadioCoordinatorHealth
+      summary: Radio coordinator health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /radio-coord/metrics:
+    get:
+      operationId: RadioCoordinatorMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /radio-coord/diag:
+    get:
+      operationId: RadioCoordinatorDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /radio-coord/channels:
+    get:
+      operationId: RadioCoordinatorListChannels
+      summary: Inspect allocated RF channels.
+      tags:
+      - Radio Coordinator
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Current radio channel assignments.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  assignments:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - assignments
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /rule-engine/health:
+    get:
+      operationId: RuleEngineHealth
+      summary: Rule engine health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /rule-engine/metrics:
+    get:
+      operationId: RuleEngineMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /rule-engine/diag:
+    get:
+      operationId: RuleEngineDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /rule-engine/rules:
+    get:
+      operationId: RuleEngineListRules
+      summary: List automation rules currently deployed.
+      tags:
+      - Rule Engine
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Automation rules and metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - rules
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /scene-svc/health:
+    get:
+      operationId: SceneServiceHealth
+      summary: Scene service health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /scene-svc/metrics:
+    get:
+      operationId: SceneServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /scene-svc/diag:
+    get:
+      operationId: SceneServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /scene-svc/scenes:
+    get:
+      operationId: SceneServiceListScenes
+      summary: List configured scenes and associated triggers.
+      tags:
+      - Scene Service
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Configured scenes and metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scenes:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - scenes
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /telemetry-pipe/health:
+    get:
+      operationId: TelemetryPipeHealth
+      summary: Telemetry pipeline health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /telemetry-pipe/metrics:
+    get:
+      operationId: TelemetryPipeMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /telemetry-pipe/diag:
+    get:
+      operationId: TelemetryPipeDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /telemetry-pipe/ingest:
+    post:
+      operationId: TelemetryPipeIngest
+      summary: Ingest a telemetry envelope for downstream routing.
+      tags:
+      - Telemetry Pipeline
+      security:
+      - mtls: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                source:
+                  type: string
+                payload:
+                  type: object
+                  additionalProperties: true
+              required:
+              - source
+              - payload
+      responses:
+        '202':
+          description: Telemetry accepted for processing.
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /updater/health:
+    get:
+      operationId: UpdaterServiceHealth
+      summary: Updater service health probe.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /updater/metrics:
+    get:
+      operationId: UpdaterServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /updater/diag:
+    get:
+      operationId: UpdaterServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+      - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /updater/available:
+    get:
+      operationId: UpdaterServiceAvailable
+      summary: Enumerate available software update payloads.
+      tags:
+      - Updater Service
+      security:
+      - mtls: []
+      responses:
+        '200':
+          description: Update packages awaiting deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updates:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                - updates
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required:
+          - code
+          - message
+      required:
+      - error
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+      - status
+    DiagnosticInfo:
+      type: object
+      properties:
+        uptimeSeconds:
+          type: integer
+          format: int64
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required:
+      - uptimeSeconds
+  responses:
+    ErrorResponse:
+      description: Structured error payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

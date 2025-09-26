@@ -17,6 +17,7 @@ members = [
     "services/audit-log",
     "services/radio-coord",
 ]
+exclude = ["tools"]
 resolver = "2"
 
 [workspace.package]

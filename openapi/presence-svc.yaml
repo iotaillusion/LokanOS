@@ -1,0 +1,126 @@
+openapi: 3.1.0
+info:
+  title: LokanOS Presence Service
+  version: 0.1.0
+  description: Tracks device and user presence signals for automation workflows.
+servers:
+  - url: https://presence-svc.lokanos.local
+    description: Internal service mesh endpoint.
+tags:
+  - name: Diagnostics
+    description: Common diagnostic endpoints across LokanOS services.
+  - name: Presence Service
+    description: Occupancy and presence sensing APIs.
+components:
+  securitySchemes:
+    mtls:
+      type: mutualTLS
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required:
+            - code
+            - message
+      required:
+        - error
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    DiagnosticInfo:
+      type: object
+      properties:
+        uptimeSeconds:
+          type: integer
+          format: int64
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      required:
+        - uptimeSeconds
+  responses:
+    ErrorResponse:
+      description: Structured error payload.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+paths:
+  /presence-svc/health:
+    get:
+      operationId: PresenceServiceHealth
+      summary: Presence service health probe.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          $ref: '#/components/responses/ErrorResponse'
+  /presence-svc/metrics:
+    get:
+      operationId: PresenceServiceMetrics
+      summary: Prometheus metrics exposition.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Prometheus metrics payload.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /presence-svc/diag:
+    get:
+      operationId: PresenceServiceDiagnostics
+      summary: Diagnostic snapshot for troubleshooting.
+      tags:
+        - Diagnostics
+      responses:
+        '200':
+          description: Runtime diagnostic information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticInfo'
+  /presence-svc/presence:
+    get:
+      operationId: PresenceServiceGetPresence
+      summary: Retrieve current occupancy state summary.
+      tags:
+        - Presence Service
+      security:
+        - mtls: []
+      responses:
+        '200':
+          description: Occupancy state per zone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                required:
+                  - zones
+        '401':
+          $ref: '#/components/responses/ErrorResponse'

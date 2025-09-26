@@ -1,0 +1,15 @@
+[package]
+name = "lokanos-tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1"
+indexmap = "2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+[[bin]]
+name = "oas-bundle"
+path = "oas-bundle.rs"
