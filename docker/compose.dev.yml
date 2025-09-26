@@ -1,18 +1,354 @@
 version: "3.9"
+
+x-rust-env: &rust-env
+  LOG_LEVEL: debug
+  RUST_BACKTRACE: "1"
+  RUST_LOG: info
+
+x-workspace-volume: &workspace-volume
+  - ..:/workspace
+
+x-rust-service: &rust-service
+  image: rust:1.73-bullseye
+  working_dir: /workspace
+  environment:
+    <<: *rust-env
+  volumes: *workspace-volume
+  tty: true
+
 services:
-  updater:
-    image: rust:1.73-bullseye
-    working_dir: /workspace
+  nats:
+    image: nats:2.10.12-alpine
+    command:
+      - -js
+      - --http_port
+      - "8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8222/varz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  postgres:
+    image: postgres:15-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: device_registry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d device_registry"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  device-registry:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        mkdir -p data/device-registry;
+        if getent hosts postgres > /dev/null 2>&1; then
+          scripts/dev/wait-for.sh postgres:5432 60;
+          export DEVICE_REGISTRY_DATABASE_URL=\"${DEVICE_REGISTRY_DATABASE_URL:-postgres://postgres:postgres@postgres/device_registry}\";
+          exec cargo run -p device-registry --no-default-features --features postgres;
+        fi;
+        export DEVICE_REGISTRY_DATABASE_URL=\"${DEVICE_REGISTRY_DATABASE_URL:-sqlite://data/device-registry/dev.db}\";
+        exec cargo run -p device-registry;
+      "
+    environment:
+      <<: *rust-env
+      DEVICE_REGISTRY_DATABASE_URL: sqlite://data/device-registry/dev.db
     volumes:
       - ..:/workspace
+      - device-registry-data:/workspace/data/device-registry
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api-gateway:
+    <<: *rust-service
     command: >-
-      bash -lc "apt-get update && apt-get install -y curl && cargo run --bin updater"
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl openssl;
+        rm -rf /var/lib/apt/lists/*;
+        if [ ! -f security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem ]; then
+          pushd security/pki/dev > /dev/null;
+          ./generate_ca.sh;
+          ./generate_server_cert.sh api-gateway localhost,api-gateway,api-gateway.local;
+          ./generate_client_cert.sh developer-cli;
+          popd > /dev/null;
+        fi;
+        scripts/dev/wait-for.sh nats:4222 60;
+        scripts/dev/wait-for.sh device-registry:8001 60;
+        scripts/dev/wait-for.sh audit-log:8008 60;
+        exec cargo run -p api-gateway;
+      "
     environment:
-      RUST_LOG: info
+      <<: *rust-env
+      API_GATEWAY_ANNOUNCE_MDNS: "false"
+      API_GATEWAY_BUS__URL: nats://nats:4222
+      API_GATEWAY_DEVICE_REGISTRY_URL: http://device-registry:8001
+      API_GATEWAY_AUDIT__ENDPOINT: http://audit-log:8008/v1/events
+      API_GATEWAY_TLS__CERT_PATH: security/pki/dev/out/services/api-gateway/api-gateway.cert.pem
+      API_GATEWAY_TLS__KEY_PATH: security/pki/dev/out/services/api-gateway/api-gateway.key.pem
+      API_GATEWAY_TLS__CLIENT_CA_PATH: security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem
+    volumes: *workspace-volume
+    ports:
+      - "8443:8443"
+    depends_on:
+      nats:
+        condition: service_healthy
+      device-registry:
+        condition: service_healthy
+      audit-log:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent \
+            --cert security/pki/dev/out/clients/developer-cli/developer-cli.cert.pem \
+            --key security/pki/dev/out/clients/developer-cli/developer-cli.key.pem \
+            --cacert security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem \
+            https://127.0.0.1:8443/v1/health
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  rule-engine:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        exec cargo run -p rule-engine;
+      "
+    volumes: *workspace-volume
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  scene-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/wait-for.sh device-registry:8001 60;
+        exec cargo run -p scene-svc;
+      "
+    environment:
+      <<: *rust-env
+      DEVICE_REGISTRY_URL: http://device-registry:8001
+    volumes: *workspace-volume
+    ports:
+      - "8003:8003"
+    depends_on:
+      device-registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  presence-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        exec cargo run -p presence-svc;
+      "
+    volumes: *workspace-volume
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8004/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  energy-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        exec cargo run -p energy-svc;
+      "
+    volumes: *workspace-volume
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8005/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  updater:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/wait-for.sh device-registry:8001 60;
+        scripts/dev/wait-for.sh scene-svc:8003 60;
+        scripts/dev/wait-for.sh rule-engine:8002 60;
+        scripts/dev/wait-for.sh presence-svc:8004 60;
+        scripts/dev/wait-for.sh energy-svc:8005 60;
+        scripts/dev/wait-for.sh telemetry-pipe:8007 60;
+        scripts/dev/wait-for.sh audit-log:8008 60;
+        scripts/dev/wait-for.sh radio-coord:8009 60;
+        exec cargo run -p updater;
+      "
+    environment:
+      <<: *rust-env
+      UPDATER_HEALTH_ENDPOINTS: "http://device-registry:8001/health,http://scene-svc:8003/health,http://rule-engine:8002/health,http://presence-svc:8004/health,http://energy-svc:8005/health,http://telemetry-pipe:8007/health,http://audit-log:8008/health,http://radio-coord:8009/v1/health"
+      UPDATER_HEALTH_DEADLINE_SECS: "60"
+      UPDATER_HEALTH_QUORUM: "5"
+    volumes:
+      - ..:/workspace
+      - updater-data:/workspace/data/updater
     ports:
       - "8006:8006"
+    depends_on:
+      device-registry:
+        condition: service_healthy
+      scene-svc:
+        condition: service_healthy
+      rule-engine:
+        condition: service_healthy
+      presence-svc:
+        condition: service_healthy
+      energy-svc:
+        condition: service_healthy
+      telemetry-pipe:
+        condition: service_healthy
+      audit-log:
+        condition: service_healthy
+      radio-coord:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8006/health"]
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8006/health"]
       interval: 5s
-      timeout: 2s
+      timeout: 3s
       retries: 12
+
+  telemetry-pipe:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        exec cargo run -p telemetry-pipe;
+      "
+    volumes: *workspace-volume
+    ports:
+      - "8007:8007"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8007/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  audit-log:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        mkdir -p data/audit-log;
+        exec cargo run -p audit-log;
+      "
+    environment:
+      <<: *rust-env
+      AUDIT_LOG_PATH: data/audit-log/audit.log
+    volumes:
+      - ..:/workspace
+      - audit-log-data:/workspace/data/audit-log
+    ports:
+      - "8008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8008/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  radio-coord:
+    <<: *rust-service
+    command: >-
+      bash -lc "
+        set -euo pipefail;
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get update;
+        apt-get install -y --no-install-recommends ca-certificates curl;
+        rm -rf /var/lib/apt/lists/*;
+        scripts/dev/wait-for.sh nats:4222 60;
+        exec cargo run -p radio-coord;
+      "
+    environment:
+      <<: *rust-env
+      RADIO_COORD_ANNOUNCE_MDNS: "false"
+      RADIO_COORD_BUS__URL: nats://nats:4222
+    volumes: *workspace-volume
+    ports:
+      - "8009:8009"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8009/v1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  device-registry-data:
+  audit-log-data:
+  updater-data:
+  postgres-data:
