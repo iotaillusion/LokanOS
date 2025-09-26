@@ -60,3 +60,39 @@ exposes lightweight diagnostic endpoints under the `/v1/diag/*` namespace:
 These endpoints are lightweight, require authentication, and integrate with the
 existing observability middleware so access attempts and latencies remain
 visible in logs and metrics.
+
+## Grafana dashboards
+
+Two curated Grafana dashboards live under `dashboards/grafana/` ready for import
+into a Lokan Grafana instance:
+
+* **Lokan Overview** (`lokan-overview.json`) brings together the top platform
+  signals—request rate, aggregate error percentage, HTTP and rule-engine p95
+  latency, updater health, rule engine throughput, and an optional energy
+  service power-draw panel. The dashboard templatizes the `env` label so teams
+  can pivot between production, staging, and on-site clusters without editing
+  queries.
+* **Device Registry** (`device-registry.json`) focuses on registry CRUD volume,
+  subscription fan-out throughput vs. failures, and the size of the pending
+  subscription backlog. The panel layout highlights saturation patterns when
+  writes or fan-out begin to queue.
+
+Exported JSON files adhere to Grafana schema v38 and assume a Prometheus data
+source (`${DS_PROMETHEUS}`) is available.
+
+## Prometheus alerting rules
+
+Operator playbooks rely on the alert bundle in
+`alerts/prometheus/observability-alerts.yaml`. The rules cover three high value
+signals:
+
+* **LokanHighErrorRate**: Pages when 5xx responses exceed 2% of request volume
+  for a given service/environment pair across five minutes.
+* **LokanLatencySLOBreach**: Tracks the shared 750 ms p95 HTTP latency SLO per
+  service and raises a page if it is breached for ten minutes.
+* **LokanMetricsScrapeMissing**: Files a ticket when any `lokan-*` scrape target
+  is absent from Prometheus for at least five minutes, catching exporter or
+  endpoint regressions quickly.
+
+Drop the YAML file into an alertmanager-enabled Prometheus installation and
+reload to activate the rules.
