@@ -1,18 +1,317 @@
 version: "3.9"
+
+x-rust-service: &rust-service
+  image: rust:1.73-bullseye
+  working_dir: /workspace
+  volumes:
+    - ..:/workspace
+  environment:
+    RUST_LOG: info
+    CARGO_TERM_COLOR: always
+
 services:
-  updater:
-    image: rust:1.73-bullseye
-    working_dir: /workspace
-    volumes:
-      - ..:/workspace
-    command: >-
-      bash -lc "apt-get update && apt-get install -y curl && cargo run --bin updater"
-    environment:
-      RUST_LOG: info
+  nats:
+    image: nats:2.10.7
+    command: ["-js", "-m", "8222"]
     ports:
-      - "8006:8006"
+      - "4222:4222"
+      - "8222:8222"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8006/health"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz >/dev/null"]
       interval: 5s
       timeout: 2s
       retries: 12
+
+  profile-postgres:
+    image: alpine:3.18
+    profiles:
+      - postgres
+    command: ["/bin/sh", "-c", "set -euo pipefail; mkdir -p /flags; echo postgres >/flags/device-registry-backend; tail -f /dev/null"]
+    volumes:
+      - profile-flags:/flags
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /flags/device-registry-backend"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  postgres:
+    image: postgres:15.5-alpine
+    profiles:
+      - postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: device_registry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  device-registry:
+    <<: *rust-service
+    volumes:
+      - profile-flags:/workspace/.profiles
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        mkdir -p data /workspace/.profiles
+        BACKEND=${DEVICE_REGISTRY_BACKEND:-auto}
+        if [ "$BACKEND" = "auto" ]; then
+          FOUND_PROFILE=0
+          for attempt in $(seq 1 2); do
+            if getent hosts profile-postgres >/dev/null 2>&1; then
+              FOUND_PROFILE=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$FOUND_PROFILE" -eq 1 ]; then
+            for wait_cycle in $(seq 1 30); do
+              if [ -f /workspace/.profiles/device-registry-backend ]; then
+                BACKEND=$(cat /workspace/.profiles/device-registry-backend)
+                break
+              fi
+              sleep 1
+            done
+          fi
+        fi
+        if [ "$BACKEND" = "postgres" ]; then
+          scripts/dev/wait-for.sh postgres 5432
+          export DEVICE_REGISTRY_DATABASE_URL="${DEVICE_REGISTRY_POSTGRES_URL:-postgres://postgres:postgres@postgres/device_registry}"
+          cargo run --manifest-path services/device-registry/Cargo.toml --bin device-registry --no-default-features --features postgres
+        else
+          cargo run --manifest-path services/device-registry/Cargo.toml --bin device-registry
+        fi
+      '
+    environment:
+      DEVICE_REGISTRY_BACKEND: ${DEVICE_REGISTRY_BACKEND:-auto}
+      DEVICE_REGISTRY_DATABASE_URL: ${DEVICE_REGISTRY_DATABASE_URL:-sqlite://data/device-registry.db}
+      DEVICE_REGISTRY_POSTGRES_URL: ${DEVICE_REGISTRY_POSTGRES_URL:-postgres://postgres:postgres@postgres/device_registry}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8001/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  scene-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        scripts/dev/wait-for.sh device-registry 8001
+        cargo run --manifest-path services/scene-svc/Cargo.toml --bin scene-svc
+      '
+    environment:
+      DEVICE_REGISTRY_URL: http://device-registry:8001
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8003/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    depends_on:
+      device-registry:
+        condition: service_healthy
+
+  rule-engine:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        cargo run --manifest-path services/rule-engine/Cargo.toml --bin rule-engine
+      '
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  presence-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        cargo run --manifest-path services/presence-svc/Cargo.toml --bin presence-svc
+      '
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8004/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  energy-svc:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        cargo run --manifest-path services/energy-svc/Cargo.toml --bin energy-svc
+      '
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8005/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  telemetry-pipe:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        cargo run --manifest-path services/telemetry-pipe/Cargo.toml --bin telemetry-pipe
+      '
+    ports:
+      - "8007:8007"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8007/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  audit-log:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        mkdir -p data
+        cargo run --manifest-path services/audit-log/Cargo.toml --bin audit-log
+      '
+    environment:
+      AUDIT_LOG_PATH: data/audit.log
+    ports:
+      - "8008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8008/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  radio-coord:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        scripts/dev/wait-for.sh nats 4222
+        cargo run --manifest-path services/radio-coord/Cargo.toml --bin radio-coord
+      '
+    environment:
+      RADIO_COORD_BUS__URL: nats://nats:4222
+    ports:
+      - "8009:8009"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8009/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  api-gateway:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        need_openssl=0
+        if [ ! -f security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem ]; then
+          need_openssl=1
+        fi
+        if [ ! -f security/pki/dev/out/services/api-gateway/api-gateway.cert.pem ]; then
+          need_openssl=1
+        fi
+        if [ ! -f security/pki/dev/out/clients/developer-cli/developer-cli.cert.pem ]; then
+          need_openssl=1
+        fi
+        if [ "$need_openssl" -eq 1 ]; then
+          apt-get update && apt-get install -y --no-install-recommends openssl
+        fi
+        if [ ! -f security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem ]; then
+          (cd security/pki/dev && ./generate_ca.sh)
+        fi
+        if [ ! -f security/pki/dev/out/services/api-gateway/api-gateway.cert.pem ]; then
+          (cd security/pki/dev && ./generate_server_cert.sh api-gateway localhost,api-gateway)
+        fi
+        if [ ! -f security/pki/dev/out/clients/developer-cli/developer-cli.cert.pem ]; then
+          (cd security/pki/dev && ./generate_client_cert.sh developer-cli)
+        fi
+        scripts/dev/wait-for.sh nats 4222
+        scripts/dev/wait-for.sh audit-log 8008
+        scripts/dev/wait-for.sh device-registry 8001
+        scripts/dev/wait-for.sh scene-svc 8003
+        cargo run --manifest-path services/api-gateway/Cargo.toml --bin api-gateway
+      '
+    environment:
+      API_GATEWAY_BIND_ADDRESS: 0.0.0.0
+      API_GATEWAY_DEVICE_REGISTRY_URL: http://device-registry:8001
+      API_GATEWAY_AUDIT__ENDPOINT: http://audit-log:8008/v1/events
+      API_GATEWAY_BUS__URL: nats://nats:4222
+      API_GATEWAY_TLS__CERT_PATH: security/pki/dev/out/services/api-gateway/api-gateway.cert.pem
+      API_GATEWAY_TLS__KEY_PATH: security/pki/dev/out/services/api-gateway/api-gateway.key.pem
+      API_GATEWAY_TLS__CLIENT_CA_PATH: security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem
+      API_GATEWAY_RBAC_POLICY_PATH: configs/rbac.yaml
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --cacert security/pki/dev/out/ca/lokan-dev-root-ca.cert.pem \
+            --cert security/pki/dev/out/clients/developer-cli/developer-cli.cert.pem \
+            --key security/pki/dev/out/clients/developer-cli/developer-cli.key.pem \
+            https://127.0.0.1:8443/health
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      audit-log:
+        condition: service_healthy
+      device-registry:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      scene-svc:
+        condition: service_healthy
+
+  updater:
+    <<: *rust-service
+    command: >-
+      bash -lc '
+        set -euo pipefail
+        mkdir -p data/updater
+        scripts/dev/wait-for.sh device-registry 8001
+        scripts/dev/wait-for.sh scene-svc 8003
+        cargo run --manifest-path services/updater/Cargo.toml --bin updater
+      '
+    environment:
+      UPDATER_HEALTH_ENDPOINTS: http://device-registry:8001/health,http://scene-svc:8003/health
+      UPDATER_OTA_PUBLIC_KEY: security/pki/dev/ota/ota_signing_public.pem
+    ports:
+      - "8006:8006"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8006/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    depends_on:
+      device-registry:
+        condition: service_healthy
+      scene-svc:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  profile-flags:
