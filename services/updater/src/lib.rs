@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::MatchedPath;
@@ -9,29 +10,26 @@ use axum::routing::get;
 use axum::Router;
 use common_config::service_port;
 use common_obs::{
-    encode_prometheus_metrics, health_router, http_request_observe, ObsInit,
+    encode_prometheus_metrics, health_router, http_request_observe, ObsInit, ObsInitError,
     PROMETHEUS_CONTENT_TYPE,
 };
 use tokio::net::TcpListener;
 
-use std::time::Instant;
-
-const SERVICE_NAME: &str = "telemetry-pipe";
-const PORT_ENV: &str = "TELEMETRY_PIPE_PORT";
-const DEFAULT_PORT: u16 = 8007;
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_SHA: &str = match option_env!("BUILD_SHA") {
+    Some(value) => value,
+    None => "dev",
+};
+const BUILD_TIME: &str = match option_env!("BUILD_TIME") {
+    Some(value) => value,
+    None => "1970-01-01T00:00:00Z",
+};
 
-fn build_sha() -> &'static str {
-    option_env!("BUILD_SHA").unwrap_or("unknown")
-}
+pub const SERVICE_NAME: &str = "updater";
+pub const PORT_ENV: &str = "UPDATER_PORT";
+pub const DEFAULT_PORT: u16 = 8006;
 
-fn build_time() -> &'static str {
-    option_env!("BUILD_TIME").unwrap_or("unknown")
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
 
     let port = service_port(PORT_ENV, DEFAULT_PORT);
@@ -40,21 +38,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event = "service_start",
         service = SERVICE_NAME,
         version = VERSION,
-        build_sha = build_sha(),
-        build_time = build_time(),
+        build_sha = BUILD_SHA,
+        build_time = BUILD_TIME,
         listen_addr = %addr,
-        "starting service"
+        "starting service",
     );
 
-    let app = Router::new()
-        .route("/metrics", get(metrics))
-        .merge(health_router(SERVICE_NAME))
-        .layer(from_fn(track_http_metrics));
+    serve(addr).await
+}
 
+pub async fn serve(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
+    let app = build_router();
     let listener = TcpListener::bind(addr).await?;
     axum::serve(listener, app.into_make_service()).await?;
-
     Ok(())
+}
+
+pub fn build_router() -> Router {
+    Router::new()
+        .route("/metrics", get(metrics))
+        .merge(health_router(SERVICE_NAME))
+        .layer(from_fn(track_http_metrics))
 }
 
 async fn metrics() -> impl IntoResponse {
@@ -74,7 +78,7 @@ async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
         .extensions()
         .get::<MatchedPath>()
         .map(|matched| matched.as_str().to_string())
-        .unwrap_or_else(|| path.clone());
+        .unwrap_or(path);
 
     let start = Instant::now();
     let response = next.run(req).await;
@@ -84,4 +88,8 @@ async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
     http_request_observe!(route.as_str(), status.as_str(), latency);
 
     response
+}
+
+pub fn init_for_tests() -> Result<(), ObsInitError> {
+    ObsInit::init(SERVICE_NAME)
 }

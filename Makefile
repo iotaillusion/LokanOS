@@ -1,7 +1,7 @@
 .PHONY: help fmt lint test build e2e package sbom oas sdks sdk-c
 
-BUILD_SHA ?= $(shell git rev-parse --short HEAD)
-BUILD_TIME ?= $(shell date -u -Iseconds | sed 's/+00:00/Z/')
+BUILD_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 CARGO_ENV = BUILD_SHA=$(BUILD_SHA) BUILD_TIME=$(BUILD_TIME)
 FAST ?= 0

@@ -100,10 +100,8 @@ jobs:
           echo "updater service failed to start" >&2
           exit 1
 
-      - name: Query metrics endpoint
-        run: |
-          curl --fail --silent http://127.0.0.1:8006/metrics | tee metrics.txt
-          grep process_uptime_seconds metrics.txt
+      - name: Validate metrics exposition
+        run: bash scripts/ci/check-metrics.sh
 
       - name: Shutdown updater service
         if: always()
