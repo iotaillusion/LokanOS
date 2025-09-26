@@ -5,6 +5,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use chrono::Utc;
+use updater::bundle::{
+    BundleError, BundleVerifier, Manifest, ManifestComponent, StageBundleMetadata,
+};
 use updater::{HealthCheckError, HealthClient, MemoryStateStore, Slot, SlotState, UpdaterCore};
 
 #[derive(Debug, Clone)]
@@ -86,9 +90,17 @@ async fn state_machine_transitions() {
     for case in cases {
         let store = Arc::new(MemoryStateStore::default()) as Arc<dyn updater::StateStore>;
         let health_client = Arc::new(SequenceHealthClient::new(case.health_results.clone()));
-        let core = UpdaterCore::new(store, health_client, Vec::new(), Duration::from_secs(1), 0)
-            .await
-            .expect("core init");
+        let bundle_verifier = Arc::new(StubBundleVerifier::default()) as Arc<dyn BundleVerifier>;
+        let core = UpdaterCore::new(
+            store,
+            health_client,
+            Vec::new(),
+            Duration::from_secs(1),
+            0,
+            bundle_verifier,
+        )
+        .await
+        .expect("core init");
 
         run_steps(&case, &core).await;
         assert_state(&case, &core).await;
@@ -182,6 +194,34 @@ async fn assert_state(case: &TestCase, core: &UpdaterCore) {
             "{}: slot {slot:?} state",
             case.name
         );
+    }
+}
+
+#[derive(Debug, Default)]
+struct StubBundleVerifier;
+
+#[async_trait]
+impl BundleVerifier for StubBundleVerifier {
+    async fn verify(&self, artifact: &str) -> Result<StageBundleMetadata, BundleError> {
+        let target_slot = if artifact.contains("slot-a") {
+            Slot::A
+        } else {
+            Slot::B
+        };
+
+        let manifest = Manifest {
+            version: "test".to_string(),
+            build_sha: "deadbeef".to_string(),
+            created_at: Utc::now(),
+            target_slot,
+            components: vec![ManifestComponent {
+                name: "rootfs".to_string(),
+                path: "images/rootfs.img".to_string(),
+                sha256: "0".repeat(64),
+            }],
+        };
+
+        Ok(StageBundleMetadata::new(manifest))
     }
 }
 

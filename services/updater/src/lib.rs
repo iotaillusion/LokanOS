@@ -16,6 +16,7 @@ use common_obs::{
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
+pub mod bundle;
 mod core;
 mod health;
 mod state;
@@ -26,6 +27,7 @@ pub use crate::health::{HealthCheckError, HealthClient, StubHealthClient};
 pub use crate::state::{Slot, SlotState, UpdaterState};
 pub use crate::store::{FileStateStore, MemoryStateStore, StateStore};
 
+use crate::bundle::FilesystemBundleVerifier;
 use crate::health::HttpHealthClient;
 use crate::state::{CommitError, StageError};
 
@@ -47,6 +49,11 @@ const HEALTH_DEADLINE_ENV: &str = "UPDATER_HEALTH_DEADLINE_SECS";
 const HEALTH_ENDPOINTS_ENV: &str = "UPDATER_HEALTH_ENDPOINTS";
 const HEALTH_QUORUM_ENV: &str = "UPDATER_HEALTH_QUORUM";
 const DEFAULT_HEALTH_DEADLINE: Duration = Duration::from_secs(30);
+const OTA_PUBLIC_KEY_ENV: &str = "UPDATER_OTA_PUBLIC_KEY";
+const DEFAULT_OTA_PUBLIC_KEY_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../security/pki/dev/ota/ota_signing_public.pem"
+);
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ObsInit::init(SERVICE_NAME).map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?;
@@ -234,7 +241,22 @@ async fn default_core() -> Result<UpdaterCore, UpdaterError> {
     let health_client = Arc::new(HttpHealthClient::default());
     let deadline = health_deadline_from_env();
 
-    UpdaterCore::new(store, health_client, endpoints, deadline, quorum).await
+    let public_key_path = std::env::var(OTA_PUBLIC_KEY_ENV)
+        .unwrap_or_else(|_| DEFAULT_OTA_PUBLIC_KEY_PATH.to_string());
+    let bundle_verifier = Arc::new(
+        FilesystemBundleVerifier::from_public_key_pem(&public_key_path)
+            .map_err(|err| StageError::InvalidBundle(err.to_string()))?,
+    );
+
+    UpdaterCore::new(
+        store,
+        health_client,
+        endpoints,
+        deadline,
+        quorum,
+        bundle_verifier,
+    )
+    .await
 }
 
 fn health_endpoints_from_env() -> Vec<String> {

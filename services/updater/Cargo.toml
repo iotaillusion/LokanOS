@@ -8,9 +8,13 @@ async-trait = "0.1"
 axum = { workspace = true, features = ["macros", "json"] }
 common-config = { workspace = true }
 common-obs = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["std", "pkcs8"] }
+pem = "3"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "fs", "time"] }
 tracing = { workspace = true }

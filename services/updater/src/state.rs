@@ -79,6 +79,12 @@ pub enum StageError {
     NoAvailableSlot,
     #[error("slot is currently booting and cannot be restaged")]
     SlotBooting,
+    #[error("target slot {0:?} is not available for staging")]
+    TargetSlotUnavailable(Slot),
+    #[error("staged slot {expected:?} does not match manifest target {requested:?}")]
+    TargetSlotMismatch { expected: Slot, requested: Slot },
+    #[error("failed to validate bundle: {0}")]
+    InvalidBundle(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,8 +104,16 @@ pub enum RollbackError {
 }
 
 impl UpdaterState {
-    pub fn stage(&mut self, artifact: String) -> Result<Slot, StageError> {
+    pub fn stage(&mut self, artifact: String, target: Option<Slot>) -> Result<Slot, StageError> {
         if let Some(slot) = self.staging {
+            if let Some(requested) = target {
+                if requested != slot {
+                    return Err(StageError::TargetSlotMismatch {
+                        expected: slot,
+                        requested,
+                    });
+                }
+            }
             let info = self
                 .slots
                 .get_mut(&slot)
@@ -119,10 +133,18 @@ impl UpdaterState {
             return Ok(slot);
         }
 
-        let candidate = Slot::ALL
-            .into_iter()
-            .find(|slot| self.is_slot_available_for_stage(*slot))
-            .ok_or(StageError::NoAvailableSlot)?;
+        let candidate = match target {
+            Some(slot) => {
+                if !self.is_slot_available_for_stage(slot) {
+                    return Err(StageError::TargetSlotUnavailable(slot));
+                }
+                slot
+            }
+            None => Slot::ALL
+                .into_iter()
+                .find(|slot| self.is_slot_available_for_stage(*slot))
+                .ok_or(StageError::NoAvailableSlot)?,
+        };
 
         let info = self
             .slots
