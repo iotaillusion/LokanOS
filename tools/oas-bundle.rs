@@ -105,17 +105,35 @@ fn main() -> Result<()> {
         bundle.insert(Value::String("components".into()), Value::Mapping(components_map));
     }
 
+    let bundle_value = Value::Mapping(bundle);
+
     let bundle_path = openapi_dir.join("_bundle.yaml");
     let writer = fs::File::create(&bundle_path)
         .with_context(|| format!("creating {}", bundle_path.display()))?;
-    serde_yaml::to_writer(writer, &Value::Mapping(bundle))
+    serde_yaml::to_writer(writer, &bundle_value)
         .with_context(|| format!("writing bundle to {}", bundle_path.display()))?;
+
+    let bundle_json_path = openapi_dir.join("_bundle.json");
+    let json_writer = fs::File::create(&bundle_json_path)
+        .with_context(|| format!("creating {}", bundle_json_path.display()))?;
+    serde_json::to_writer_pretty(json_writer, &bundle_value)
+        .with_context(|| format!("writing bundle to {}", bundle_json_path.display()))?;
 
     // Basic syntax validation by parsing the freshly generated bundle.
     let reader = fs::File::open(&bundle_path)
         .with_context(|| format!("re-opening {} for validation", bundle_path.display()))?;
     let _: Value = serde_yaml::from_reader(reader)
         .with_context(|| format!("validating YAML syntax for {}", bundle_path.display()))?;
+
+    let json_reader = fs::File::open(&bundle_json_path).with_context(|| {
+        format!(
+            "re-opening {} for validation",
+            bundle_json_path.display()
+        )
+    })?;
+    let _: serde_json::Value = serde_json::from_reader(json_reader).with_context(|| {
+        format!("validating JSON syntax for {}", bundle_json_path.display())
+    })?;
 
     println!(
         "Bundled {} documents into {}",
