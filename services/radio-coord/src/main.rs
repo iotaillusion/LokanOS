@@ -8,6 +8,7 @@ use axum::middleware::{from_fn, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::{DateTime, Utc};
 use common_config::{load, MsgBusConfig, ServiceConfig};
 use common_mdns::announce;
 use common_msgbus::{MessageBus, NatsBus, NatsConfig};
@@ -15,6 +16,7 @@ use common_obs::{
     encode_prometheus_metrics, handler_latency_seconds, http_requests_total, msgbus_publish_total,
     ObsInit, PROMETHEUS_CONTENT_TYPE,
 };
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -63,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let state = Arc::new(AppState { bus });
+    let state = Arc::new(AppState::new(bus));
 
     let app = Router::new()
         .route("/v1/health", get(health))
@@ -71,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/thread/channel", post(update_thread_channel))
         .route("/v1/wifi/config", post(apply_wifi_config))
         .route("/v1/wifi/channel", post(update_wifi_channel))
+        .route("/v1/diag/radio-map", get(radio_map))
         .route("/metrics", get(metrics))
         .with_state(state.clone())
         .layer(from_fn(track_http_metrics));
@@ -118,6 +121,144 @@ async fn track_http_metrics(req: Request<Body>, next: Next) -> Response {
 #[derive(Clone)]
 struct AppState {
     bus: Arc<dyn MessageBus>,
+    radio_map: Arc<RwLock<RadioMapSnapshot>>,
+}
+
+impl AppState {
+    fn new(bus: Arc<dyn MessageBus>) -> Self {
+        Self {
+            bus,
+            radio_map: Arc::new(RwLock::new(RadioMapSnapshot::default())),
+        }
+    }
+
+    fn snapshot(&self) -> RadioMapSnapshot {
+        self.radio_map.read().clone()
+    }
+
+    fn update_thread_dataset(&self, request: &ThreadDatasetRequest) {
+        let now = Utc::now();
+        let mut map = self.radio_map.write();
+        map.thread.dataset = Some(ThreadDatasetSnapshot {
+            dataset_id: request.dataset_id.clone(),
+            network_name: request.network_name.clone(),
+            channel: request.channel,
+            pan_id: request.pan_id.clone(),
+            xpan_id: request.xpan_id.clone(),
+            updated_at: now,
+        });
+        map.thread.channel = Some(ThreadChannelSnapshot {
+            channel: request.channel,
+            dataset_id: Some(request.dataset_id.clone()),
+            updated_at: now,
+        });
+    }
+
+    fn update_thread_channel(&self, request: &ThreadChannelRequest) {
+        let now = Utc::now();
+        let mut map = self.radio_map.write();
+        map.thread.channel = Some(ThreadChannelSnapshot {
+            channel: request.channel,
+            dataset_id: request.dataset_id.clone(),
+            updated_at: now,
+        });
+        if let Some(dataset) = map.thread.dataset.as_mut() {
+            dataset.channel = request.channel;
+            dataset.updated_at = now;
+        }
+    }
+
+    fn update_wifi_config(&self, request: &WifiConfigRequest) {
+        let now = Utc::now();
+        let mut map = self.radio_map.write();
+        map.wifi.config = Some(WifiConfigSnapshot {
+            ssid: request.ssid.clone(),
+            security: request.security.as_str().to_string(),
+            band: request.band.clone(),
+            channel: request.channel,
+            updated_at: now,
+        });
+        if let Some(channel) = request.channel {
+            map.wifi.channel = Some(WifiChannelSnapshot {
+                channel,
+                band: request.band.clone(),
+                updated_at: now,
+            });
+        }
+    }
+
+    fn update_wifi_channel(&self, request: &WifiChannelRequest) {
+        let now = Utc::now();
+        let mut map = self.radio_map.write();
+        map.wifi.channel = Some(WifiChannelSnapshot {
+            channel: request.channel,
+            band: request.band.clone(),
+            updated_at: now,
+        });
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RadioMapSnapshot {
+    thread: ThreadSnapshot,
+    wifi: WifiSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadSnapshot {
+    dataset: Option<ThreadDatasetSnapshot>,
+    channel: Option<ThreadChannelSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadDatasetSnapshot {
+    dataset_id: String,
+    network_name: String,
+    channel: u8,
+    pan_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xpan_id: Option<String>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadChannelSnapshot {
+    channel: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dataset_id: Option<String>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiSnapshot {
+    config: Option<WifiConfigSnapshot>,
+    channel: Option<WifiChannelSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiConfigSnapshot {
+    ssid: String,
+    security: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    band: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel: Option<u8>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WifiChannelSnapshot {
+    channel: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    band: Option<String>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +413,7 @@ async fn apply_thread_dataset(
     });
 
     publish_event(&state, "radio.thread.dataset.set", &event).await?;
+    state.update_thread_dataset(&request);
 
     Ok((
         StatusCode::ACCEPTED,
@@ -295,6 +437,7 @@ async fn update_thread_channel(
     });
 
     publish_event(&state, "radio.thread.channel.set", &event).await?;
+    state.update_thread_channel(&request);
 
     Ok((
         StatusCode::ACCEPTED,
@@ -320,6 +463,7 @@ async fn apply_wifi_config(
     });
 
     publish_event(&state, "radio.wifi.config.set", &event).await?;
+    state.update_wifi_config(&request);
 
     Ok((
         StatusCode::ACCEPTED,
@@ -343,6 +487,7 @@ async fn update_wifi_channel(
     });
 
     publish_event(&state, "radio.wifi.channel.set", &event).await?;
+    state.update_wifi_channel(&request);
 
     Ok((
         StatusCode::ACCEPTED,
@@ -489,4 +634,8 @@ async fn publish_event(
         .publish(subject, &bytes)
         .await
         .map_err(|err| ApiError::Bus(err.to_string()))
+}
+
+async fn radio_map(State(state): State<SharedState>) -> Json<RadioMapSnapshot> {
+    Json(state.snapshot())
 }

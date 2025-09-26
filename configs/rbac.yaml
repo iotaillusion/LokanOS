@@ -16,6 +16,14 @@ routes:
     methods: [GET]
     roles: [guest]
     audit_action: system.info
+  - pattern: /v1/diag/ping
+    methods: [GET]
+    roles: [admin, owner]
+    audit_action: diag.ping
+  - pattern: /v1/diag/routes
+    methods: [GET]
+    roles: [admin, owner]
+    audit_action: diag.routes
   - pattern: /v1/devices
     methods: [GET]
     roles: [member, admin, owner]
